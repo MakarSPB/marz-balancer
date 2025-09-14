@@ -1,4 +1,4 @@
-services:
+﻿services:
   marz_balancer:
     build: .
     container_name: marz_balancer
@@ -15,6 +15,7 @@ services:
       - ./requirements.txt:/app/requirements.txt:ro
       - ./.env:/app/.env:ro
       - ./data:/data
+      - ./logs:/app/logs
     working_dir: /app
     command: python marz_balancer.py
     depends_on:
