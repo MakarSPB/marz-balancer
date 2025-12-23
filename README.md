@@ -12,7 +12,7 @@
 - Простая установка и запуск через Docker.
 
 Для подсчета клиентских подключений к нодам, надо установить ip-агент на каждую ноду Marzban.
-https://github.com/Makar-aka/ip_agent
+https://github.com/MakarSPB/ip_agent
 
 ## Быстрый старт
 
@@ -53,4 +53,4 @@ MIT
 
 ---
 
-© [MakarSPB](https://github.com/Makar-aka/marz-balancer)
+© [MakarSPB](https://github.com/MakarSPB/marz-balancer)
