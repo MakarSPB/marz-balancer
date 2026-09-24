@@ -39,6 +39,11 @@ http://localhost:ваш порт/
 
 - `GET /api/stats` — получить текущую агрегированную статистику в формате JSON.
 
+## Конфигурация
+
+- `TELEGRAM_PROXY_URL` — опциональный backend-адрес nginx proxy для Telegram API.
+  Если указан, backend использует его вместо `https://api.telegram.org`.
+
 ## Зависимости
 
 - Python 3.9+

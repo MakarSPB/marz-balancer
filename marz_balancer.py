@@ -21,6 +21,8 @@ POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "5"))
 APP_PORT = int(os.getenv("APP_PORT", "8023"))
 IP_AGENT_PORT = os.getenv("IP_AGENT_PORT", "").strip()
 IP_AGENT_SCHEME = os.getenv("IP_AGENT_SCHEME", "http").strip()
+TELEGRAM_PROXY_URL = os.getenv("TELEGRAM_PROXY_URL", "").strip().rstrip("/")
+TELEGRAM_API_BASE = TELEGRAM_PROXY_URL or "https://api.telegram.org"
 
 MONITOR_PORT = int(os.getenv("MONITOR_PORT", "8443"))
 
@@ -38,6 +40,7 @@ stats: Dict[str, Any] = {
     "system": None,
     "nodes_usage": None,
     "users_usage": None,
+    "telegram_api_base": TELEGRAM_API_BASE,
     "port_8443": {"unique_clients": 0, "clients": []},
 }
 _token_cache: Dict[str, Any] = {"token": None, "fetched_at": 0, "ttl": 300}
@@ -267,6 +270,19 @@ def _parse_ss_output_for_remote_ips(output: str) -> List[str]:
         if m:
             ip = m.group(1)
             ips.add(ip)
+    return sorted(ips)
+
+
+def get_unique_remote_ips(port: int) -> List[str]:
+    try:
+        output = subprocess.check_output(
+            ["ss", "-tn", f"sport = :{port}"],
+            stderr=subprocess.DEVNULL,
+            text=True,
+        )
+        return _parse_ss_output_for_remote_ips(output)
+    except Exception:
+        return []
 
 async def poll_loop():
     async with aiohttp.ClientSession() as session:
@@ -399,82 +415,105 @@ async def index(request: Request):
     nodes = stats.get("nodes", [])
     last = stats.get("last_update")
     err = stats.get("error")
-    system = stats.get("system")
+    system = stats.get("system") or {}
     port_info = stats.get("port_8443", {})
     last_str = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last)) if last else "—"
 
-    # суммарное количество активных клиентов по всем нодам
-    total_clients = sum(int(n.get('clients_count') or 0) for n in nodes)
-
-    header = f"""
-    <div class="mb-3 d-flex flex-wrap align-items-center">
-        <span class="badge bg-secondary">Последнее обновление: {last_str}</span>
-        <span class="badge bg-info text-dark ms-2">Подключений к порту {MONITOR_PORT}: {port_info.get('unique_clients', '—')}</span>
-        <span class="badge bg-dark ms-2">Активных клиентов: {total_clients}</span>
-    </div>
-    """
-    if system:
-        header += f"""
-        <div class="mb-3">
-            <span class="badge bg-success">Online users (master): {system.get('online_users', '—')}</span>
-            <span class="badge bg-primary ms-2">Incoming bandwidth: {human_bytes(system.get('incoming_bandwidth'))}</span>
-            <span class="badge bg-primary ms-2">Outgoing bandwidth: {human_bytes(system.get('outgoing_bandwidth'))}</span>
-        </div>
-        """
+    total_clients = sum(int(n.get("clients_count") or 0) for n in nodes)
+    online_nodes = sum(1 for n in nodes if str(n.get("status") or "").lower() in ("connected", "online", "healthy"))
 
     items = ""
     for n in nodes:
+        status_raw = str(n.get("status") or "—")
+        status_key = status_raw.lower()
+        status_class = "badge bg-secondary"
+        if status_key in ("connected", "online", "healthy"):
+            status_class = "badge bg-success"
+        elif status_key in ("error", "offline", "disconnected"):
+            status_class = "badge bg-danger"
+        clients_err = n.get("clients_error")
         items += f"""
-        <div class="col">
-            <div class="card shadow-sm mb-4">
-                <div class="card-header bg-light">
-                    <b>{n.get('name') or n.get('address')}</b>
-                </div>
-                <div class="card-body">
-                    <ul class="list-group list-group-flush">
-                        <li class="list-group-item"><b>Address:</b> {n.get('address') or '—'}</li>
-                        <li class="list-group-item"><b>API port:</b> {n.get('api_port') or '—'}</li>
-                        <li class="list-group-item"><b>Status:</b> {n.get('status') or '—'}</li>
-                        <li class="list-group-item"><b>Clients:</b> {n.get('clients_count') if n.get('clients_count') is not None else '—'}</li>
-                        <li class="list-group-item"><b>Uplink:</b> {human_bytes(n.get('uplink'))} <b>Downlink:</b> {human_bytes(n.get('downlink'))}</li>
-                    </ul>
-                    {"<div class='alert alert-danger mt-2'>Clients error: " + n.get('clients_error') + "</div>" if n.get('clients_error') else ""}
-                </div>
+        <article class="node-card">
+            <div class="node-card-head">
+                <h3>{n.get('name') or n.get('address') or 'unknown-node'}</h3>
+                <span class="{status_class}">{status_raw}</span>
             </div>
-        </div>
+            <div class="node-grid">
+                <div><span>Адрес</span><strong>{n.get('address') or '—'}</strong></div>
+                <div><span>API порт</span><strong>{n.get('api_port') or '—'}</strong></div>
+                <div><span>Клиенты</span><strong>{n.get('clients_count') if n.get('clients_count') is not None else '—'}</strong></div>
+                <div><span>Uplink / Downlink</span><strong>{human_bytes(n.get('uplink'))} / {human_bytes(n.get('downlink'))}</strong></div>
+            </div>
+            {f"<div class='node-error'>Ошибка клиентов: {clients_err}</div>" if clients_err else ""}
+        </article>
         """
+
     if not items:
-        items = "<div class='alert alert-warning'>Ноды не обнаружены.</div>"
+        items = "<div class='empty-state'>Ноды не обнаружены.</div>"
 
     html = f"""<!doctype html>
 <html lang="ru">
 <head>
     <meta charset="utf-8">
-    <title>Marzban nodes</title>
+    <title>MarzBalancer Dashboard</title>
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <!-- Bootstrap 5 CDN -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {{ background: #0b1020; color: #d8e1ff; }}
+        .app-wrap {{ max-width: 1280px; margin: 0 auto; padding: 28px 20px 36px; }}
+        .hero {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:22px; flex-wrap:wrap; }}
+        .hero h1 {{ margin:0; font-size:1.8rem; font-weight:700; }}
+        .hero p {{ margin:6px 0 0; color:#9fb0de; }}
+        .stats-grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:12px; margin-bottom:16px; }}
+        .stat-card {{ background:#131b33; border:1px solid #27345b; border-radius:14px; padding:14px 16px; }}
+        .stat-card span {{ display:block; color:#93a6d8; font-size:.86rem; margin-bottom:4px; }}
+        .stat-card strong {{ font-size:1.2rem; }}
+        .error-banner {{ background:#4a1d2a; border:1px solid #a83f58; color:#ffd4df; border-radius:10px; padding:10px 12px; margin-bottom:16px; }}
+        .nodes-grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:14px; }}
+        .node-card {{ background:#121a30; border:1px solid #2b3d69; border-radius:14px; padding:14px; }}
+        .node-card-head {{ display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px; }}
+        .node-card-head h3 {{ margin:0; font-size:1.05rem; }}
+        .node-grid {{ display:grid; grid-template-columns: 1fr 1fr; gap:10px 12px; }}
+        .node-grid span {{ display:block; font-size:.8rem; color:#8ea2d9; margin-bottom:1px; }}
+        .node-grid strong {{ font-size:.95rem; color:#ecf2ff; }}
+        .node-error {{ margin-top:12px; color:#ffd4df; background:#4a1d2a; border:1px solid #a83f58; border-radius:10px; padding:8px 10px; font-size:.9rem; }}
+        .empty-state {{ grid-column:1/-1; background:#1a233f; border:1px dashed #4b5f92; color:#b9c8ef; border-radius:12px; padding:20px; text-align:center; }}
+        .footer-link {{ position:fixed; right:16px; bottom:12px; color:#91a4dc; text-decoration:none; font-size:.85rem; opacity:.8; }}
+        .footer-link:hover {{ opacity:1; color:#c7d5ff; }}
+        @media (max-width: 700px) {{ .node-grid {{ grid-template-columns: 1fr; }} }}
+    </style>
 </head>
-<body class="bg-light">
-<div class="container py-4">
-    <h1 class="mb-4">Marzban — Ноды</h1>
-    {header}
-    <div style="color:#b00">{err or ''}</div>
-    <div class="row row-cols-1 row-cols-md-2 row-cols-lg-3 g-4">
-        {items}
-    </div>
-</div>
+<body>
+    <main class="app-wrap">
+        <section class="hero">
+            <div>
+                <h1>MarzBalancer Dashboard</h1>
+                <p>Состояние нод и агрегированная статистика в реальном времени</p>
+            </div>
+            <span class="badge text-bg-secondary">Обновлено: {last_str}</span>
+        </section>
 
-<a href="https://github.com/Makar-aka/marz-balancer"
-   target="_blank" rel="noopener noreferrer"
-   class="position-fixed end-0 bottom-0 m-3 small text-muted text-decoration-underline"
-   style="z-index:9999;">
-   &copy; MakarSPB
-</a>
+        <section class="stats-grid">
+            <div class="stat-card"><span>Ноды онлайн</span><strong>{online_nodes} / {len(nodes)}</strong></div>
+            <div class="stat-card"><span>Активные клиенты</span><strong>{total_clients}</strong></div>
+            <div class="stat-card"><span>Подключения к порту {MONITOR_PORT}</span><strong>{port_info.get('unique_clients', '—')}</strong></div>
+            <div class="stat-card"><span>Online users (master)</span><strong>{system.get('online_users', '—')}</strong></div>
+            <div class="stat-card"><span>Incoming bandwidth</span><strong>{human_bytes(system.get('incoming_bandwidth'))}</strong></div>
+            <div class="stat-card"><span>Outgoing bandwidth</span><strong>{human_bytes(system.get('outgoing_bandwidth'))}</strong></div>
+        </section>
 
-<script>
-setTimeout(()=>location.reload(), {int(POLL_INTERVAL*1000)});
-</script>
+        {f"<div class='error-banner'>{err}</div>" if err else ""}
+
+        <section class="nodes-grid">
+            {items}
+        </section>
+    </main>
+
+    <a href="https://github.com/Makar-aka/marz-balancer" target="_blank" rel="noopener noreferrer" class="footer-link">&copy; MakarSPB</a>
+
+    <script>
+        setTimeout(() => location.reload(), {int(POLL_INTERVAL * 1000)});
+    </script>
 </body>
 </html>"""
     return HTMLResponse(content=html)
