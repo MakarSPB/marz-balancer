@@ -744,7 +744,14 @@ async def index(request: Request):
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
     <style>
-        body {{ background: #0b1020; color: #d8e1ff; }}
+        body {{ background: #0b1020; color: #d8e1ff; margin: 0; }}
+        .navbar-custom {{ background: #080e1f; border-bottom: 1px solid #27345b; padding: 12px 0; position: sticky; top: 0; z-index: 100; }}
+        .navbar-title {{ font-weight: 700; font-size: 1.2rem; margin: 0; color: #d8e1ff; }}
+        .nav-buttons {{ display: flex; gap: 8px; align-items: center; }}
+        .nav-btn {{ padding: 6px 14px; border: 1px solid #4b6bb0; border-radius: 8px; text-decoration: none; color: #b9c8ef; font-size: 0.95rem; transition: all 0.2s; }}
+        .nav-btn:hover {{ background: #1a2847; color: #d8e1ff; border-color: #6b8fd9; }}
+        .nav-btn.active {{ background: #2b4a8c; color: #d8e1ff; border-color: #6b8fd9; }}
+        .navbar-wrapper {{ max-width: 1280px; margin: 0 auto; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; }}
         .app-wrap {{ max-width: 1280px; margin: 0 auto; padding: 28px 20px 36px; }}
         .hero {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:22px; flex-wrap:wrap; }}
         .hero h1 {{ margin:0; font-size:1.8rem; font-weight:700; }}
@@ -765,20 +772,27 @@ async def index(request: Request):
         .empty-state {{ grid-column:1/-1; background:#1a233f; border:1px dashed #4b5f92; color:#b9c8ef; border-radius:12px; padding:20px; text-align:center; }}
         .footer-link {{ position:fixed; right:16px; bottom:12px; color:#91a4dc; text-decoration:none; font-size:.85rem; opacity:.8; }}
         .footer-link:hover {{ opacity:1; color:#c7d5ff; }}
-        @media (max-width: 700px) {{ .node-grid {{ grid-template-columns: 1fr; }} }}
+        @media (max-width: 700px) {{ .node-grid {{ grid-template-columns: 1fr; }} .nav-buttons {{ flex-direction: column; width: 100%; margin-top: 12px; }} }}
     </style>
 </head>
 <body>
+    <nav class="navbar-custom">
+        <div class="navbar-wrapper">
+            <h2 class="navbar-title">MarzBalancer</h2>
+            <div class="nav-buttons">
+                <a href="/" class="nav-btn active">Статус нод</a>
+                <a href="/reconnects" class="nav-btn">Переподключения</a>
+                <a href="/settings" class="nav-btn">Настройки</a>
+            </div>
+        </div>
+    </nav>
     <main class="app-wrap">
         <section class="hero">
             <div>
-                <h1>MarzBalancer Dashboard</h1>
+                <h1>Статус нод</h1>
                 <p>Состояние нод и агрегированная статистика в реальном времени</p>
             </div>
-            <div class="d-flex gap-2 align-items-center">
-                <a href="/settings" class="btn btn-sm btn-outline-light">Настройки</a>
-                <span class="badge text-bg-secondary">Обновлено: {last_str}</span>
-            </div>
+            <span class="badge text-bg-secondary">Обновлено: {last_str}</span>
         </section>
 
         <section class="stats-grid">
@@ -797,7 +811,101 @@ async def index(request: Request):
         </section>
     </main>
 
-    <a href="https://github.com/Makar-aka/marz-balancer" target="_blank" rel="noopener noreferrer" class="footer-link">&copy; MakarSPB</a>
+    <a href="https://github.com/MakarSPB/marz-balancer" target="_blank" rel="noopener noreferrer" class="footer-link">&copy; MakarSPB</a>
+
+    <script>
+        setTimeout(() => location.reload(), {int(POLL_INTERVAL * 1000)});
+    </script>
+</body>
+</html>"""
+    return HTMLResponse(content=html)
+
+
+@APP.get("/reconnects", response_class=HTMLResponse)
+async def reconnects_page(request: Request):
+    reconnect_attempts = stats.get("reconnect_attempts", [])
+
+    reconnect_items = ""
+    if reconnect_attempts:
+        for attempt in reconnect_attempts:
+            status_badge = "bg-success" if attempt.get("ok") else "bg-danger"
+            status_text = "✓ OK" if attempt.get("ok") else "✗ FAILED"
+            error_info = f"<div style='color: #ffa9c9; font-size: 0.9rem; margin-top: 8px;'><strong>Ошибка:</strong> {attempt.get('error')}</div>" if attempt.get("error") else ""
+
+            reconnect_items += f"""
+            <article class="node-card">
+                <div class="node-card-head">
+                    <h3>{attempt.get('node_name') or f"Нода #{attempt.get('node_id')}"}</h3>
+                    <span class="badge bg-{status_badge}">{status_text}</span>
+                </div>
+                <div class="node-grid">
+                    <div><span>ID</span><strong>{attempt.get('node_id')}</strong></div>
+                    <div><span>Статус</span><strong>{attempt.get('status')}</strong></div>
+                </div>
+                {error_info}
+            </article>
+            """
+    else:
+        reconnect_items = "<div class='empty-state'>Попыток переподключения не найдено</div>"
+
+    html = f"""<!doctype html>
+<html lang="ru">
+<head>
+    <meta charset="utf-8">
+    <title>Переподключения - MarzBalancer</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <style>
+        body {{ background: #0b1020; color: #d8e1ff; margin: 0; }}
+        .navbar-custom {{ background: #080e1f; border-bottom: 1px solid #27345b; padding: 12px 0; position: sticky; top: 0; z-index: 100; }}
+        .navbar-title {{ font-weight: 700; font-size: 1.2rem; margin: 0; color: #d8e1ff; }}
+        .nav-buttons {{ display: flex; gap: 8px; align-items: center; }}
+        .nav-btn {{ padding: 6px 14px; border: 1px solid #4b6bb0; border-radius: 8px; text-decoration: none; color: #b9c8ef; font-size: 0.95rem; transition: all 0.2s; }}
+        .nav-btn:hover {{ background: #1a2847; color: #d8e1ff; border-color: #6b8fd9; }}
+        .nav-btn.active {{ background: #2b4a8c; color: #d8e1ff; border-color: #6b8fd9; }}
+        .navbar-wrapper {{ max-width: 1280px; margin: 0 auto; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; }}
+        .app-wrap {{ max-width: 1280px; margin: 0 auto; padding: 28px 20px 36px; }}
+        .hero {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:22px; flex-wrap:wrap; }}
+        .hero h1 {{ margin:0; font-size:1.8rem; font-weight:700; }}
+        .hero p {{ margin:6px 0 0; color:#9fb0de; }}
+        .nodes-grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:14px; }}
+        .node-card {{ background:#121a30; border:1px solid #2b3d69; border-radius:14px; padding:14px; }}
+        .node-card-head {{ display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px; }}
+        .node-card-head h3 {{ margin:0; font-size:1.05rem; }}
+        .node-grid {{ display:grid; grid-template-columns: 1fr 1fr; gap:10px 12px; }}
+        .node-grid span {{ display:block; font-size:.8rem; color:#8ea2d9; margin-bottom:1px; }}
+        .node-grid strong {{ font-size:.95rem; color:#ecf2ff; }}
+        .empty-state {{ grid-column:1/-1; background:#1a233f; border:1px dashed #4b5f92; color:#b9c8ef; border-radius:12px; padding:20px; text-align:center; }}
+        .footer-link {{ position:fixed; right:16px; bottom:12px; color:#91a4dc; text-decoration:none; font-size:.85rem; opacity:.8; }}
+        .footer-link:hover {{ opacity:1; color:#c7d5ff; }}
+        @media (max-width: 700px) {{ .node-grid {{ grid-template-columns: 1fr; }} .nav-buttons {{ flex-direction: column; width: 100%; margin-top: 12px; }} }}
+    </style>
+</head>
+<body>
+    <nav class="navbar-custom">
+        <div class="navbar-wrapper">
+            <h2 class="navbar-title">MarzBalancer</h2>
+            <div class="nav-buttons">
+                <a href="/" class="nav-btn">Статус нод</a>
+                <a href="/reconnects" class="nav-btn active">Переподключения</a>
+                <a href="/settings" class="nav-btn">Настройки</a>
+            </div>
+        </div>
+    </nav>
+    <main class="app-wrap">
+        <section class="hero">
+            <div>
+                <h1>История переподключений</h1>
+                <p>Последние попытки автоматического переподключения офлайн нод</p>
+            </div>
+        </section>
+
+        <section class="nodes-grid">
+            {reconnect_items}
+        </section>
+    </main>
+
+    <a href="https://github.com/MakarSPB/marz-balancer" target="_blank" rel="noopener noreferrer" class="footer-link">&copy; MakarSPB</a>
 
     <script>
         setTimeout(() => location.reload(), {int(POLL_INTERVAL * 1000)});
@@ -817,69 +925,120 @@ async def settings_get(request: Request):
 <html lang="ru"><head><meta charset="utf-8"><title>Настройки MarzBalancer</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-</head><body class="bg-light"><div class="container py-4">
-<h1 class="mb-4">Настройки</h1>
-{f'<div class="alert alert-success">{msg}</div>' if msg else ''}
-<form method="post" action="/settings">
-  <h5 class="mb-3">Marzban</h5>
-  <div class="mb-3">
-    <label class="form-label">MARZBAN_URL</label>
-    <input name="MARZBAN_URL" class="form-control" value="{MARZBAN_URL or ''}" placeholder="https://marzban.example.com">
-  </div>
-  <div class="mb-3">
-    <label class="form-label">MARZBAN_ADMIN_USER</label>
-    <input name="MARZBAN_ADMIN_USER" class="form-control" value="{MARZBAN_ADMIN_USER or ''}" placeholder="admin">
-  </div>
-  <div class="mb-3">
-    <label class="form-label">MARZBAN_ADMIN_PASS</label>
-    <input name="MARZBAN_ADMIN_PASS" type="password" class="form-control" value="" placeholder="введите новый пароль или оставьте пустым">
-    <div class="form-text">Текущий: {marz_pass_display}</div>
-  </div>
-  <div class="form-check mb-3">
-    <input class="form-check-input" type="checkbox" name="IP_AGENT_ENABLED" id="ipAgentEnabled" {"checked" if IP_AGENT_ENABLED else ""}>
-    <label class="form-check-label" for="ipAgentEnabled">Проверять IP-агент нод</label>
-  </div>
-
-  <h5 class="mb-3 mt-4">Telegram уведомления</h5>
-  <div class="mb-3">
-    <label class="form-label">TELEGRAM_PROXY_URL</label>
-    <input name="TELEGRAM_PROXY_URL" class="form-control" value="{TELEGRAM_PROXY_URL or ''}" placeholder="https://proxy.example">
-  </div>
-  <div class="mb-3">
-    <label class="form-label">TELEGRAM_BOT_TOKEN</label>
-    <input name="TELEGRAM_BOT_TOKEN" type="text" class="form-control" value="{TELEGRAM_BOT_TOKEN or ''}" placeholder="токен бота">
-    <div class="form-text">Текущий: {token_display}</div>
-  </div>
-  <div class="mb-3">
-    <label class="form-label">TELEGRAM_CHAT_ID</label>
-       <input name="TELEGRAM_CHAT_ID" class="form-control" value="{TELEGRAM_CHAT_ID or ''}" placeholder="чат_ID">
-     </div>
-
-    <div class="card mb-3">
-      <div class="card-header">Фильтр статусов для уведомлений</div>
-      <div class="card-body">
-        <div class="form-check mb-2">
-          <input class="form-check-input" type="checkbox" name="TELEGRAM_NOTIFY_ON_ONLINE" id="notifyOnline" {"checked" if TELEGRAM_NOTIFY_ON_ONLINE else ""}>
-          <label class="form-check-label" for="notifyOnline">Уведомлять при подключении ноды (online)</label>
+<style>
+    body { background: #0b1020; color: #d8e1ff; margin: 0; }
+    .navbar-custom { background: #080e1f; border-bottom: 1px solid #27345b; padding: 12px 0; position: sticky; top: 0; z-index: 100; }
+    .navbar-title { font-weight: 700; font-size: 1.2rem; margin: 0; color: #d8e1ff; }
+    .nav-buttons { display: flex; gap: 8px; align-items: center; }
+    .nav-btn { padding: 6px 14px; border: 1px solid #4b6bb0; border-radius: 8px; text-decoration: none; color: #b9c8ef; font-size: 0.95rem; transition: all 0.2s; }
+    .nav-btn:hover { background: #1a2847; color: #d8e1ff; border-color: #6b8fd9; }
+    .nav-btn.active { background: #2b4a8c; color: #d8e1ff; border-color: #6b8fd9; }
+    .navbar-wrapper { max-width: 1280px; margin: 0 auto; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; }
+    .app-wrap { max-width: 1280px; margin: 0 auto; padding: 28px 20px 36px; }
+    .hero { margin-bottom:22px; }
+    .hero h1 { margin:0; font-size:1.8rem; font-weight:700; }
+    .hero p { margin:6px 0 0; color:#9fb0de; }
+    .form-section { background: #121a30; border:1px solid #2b3d69; border-radius:14px; padding:20px; margin-bottom:20px; }
+    .form-section h5 { color: #d8e1ff; margin-bottom: 16px; font-weight: 700; border-bottom: 1px solid #27345b; padding-bottom: 12px; }
+    .form-label { color: #b9c8ef; font-size: 0.95rem; }
+    .form-control { background: #0b0f1f; border: 1px solid #27345b; color: #d8e1ff; }
+    .form-control:focus { background: #131a30; border-color: #4b6bb0; color: #d8e1ff; box-shadow: 0 0 0 0.2rem rgba(75, 107, 176, 0.25); }
+    .form-check-input { background: #0b0f1f; border: 1px solid #27345b; }
+    .form-check-input:checked { background: #2b5a9c; border-color: #4b6bb0; }
+    .form-check-label { color: #b9c8ef; margin: 0; }
+    .form-text { color: #8ea2d9; }
+    .btn-primary { background: #2b5a9c; border: 1px solid #4b6bb0; color: #d8e1ff; }
+    .btn-primary:hover { background: #3a70b8; border-color: #6b8fd9; }
+    .btn-outline-success { border: 1px solid #27a745; color: #5fcd7d; }
+    .btn-outline-success:hover { background: #27a745; color: #d8e1ff; border-color: #27a745; }
+    .alert-success { background: #1a3a1f; border: 1px solid #2d5a3d; color: #7dd47d; }
+    .footer-link { position:fixed; right:16px; bottom:12px; color:#91a4dc; text-decoration:none; font-size:.85rem; opacity:.8; }
+    .footer-link:hover { opacity:1; color:#c7d5ff; }
+    @media (max-width: 700px) { .nav-buttons { flex-direction: column; width: 100%; margin-top: 12px; } }
+</style>
+<nav class="navbar-custom">
+    <div class="navbar-wrapper">
+        <h2 class="navbar-title">MarzBalancer</h2>
+        <div class="nav-buttons">
+            <a href="/" class="nav-btn">Статус нод</a>
+            <a href="/reconnects" class="nav-btn">Переподключения</a>
+            <a href="/settings" class="nav-btn active">Настройки</a>
         </div>
-        <div class="form-check mb-2">
-          <input class="form-check-input" type="checkbox" name="TELEGRAM_NOTIFY_ON_OFFLINE" id="notifyOffline" {"checked" if TELEGRAM_NOTIFY_ON_OFFLINE else ""}>
-          <label class="form-check-label" for="notifyOffline">Уведомлять при отключении ноды (offline)</label>
-        </div>
-        <div class="form-check">
-          <input class="form-check-input" type="checkbox" name="TELEGRAM_NOTIFY_ON_CONNECTING" id="notifyConnecting" {"checked" if TELEGRAM_NOTIFY_ON_CONNECTING else ""}>
-          <label class="form-check-label" for="notifyConnecting">Уведомлять о переподключении ноды (connecting)</label>
-        </div>
-      </div>
     </div>
+</nav>
+<main class="app-wrap">
+    <section class="hero">
+        <div>
+            <h1>Настройки</h1>
+            <p>Конфигурация Marzban и Telegram уведомлений</p>
+        </div>
+    </section>
+    {f'<div class="alert alert-success" role="alert">{msg}</div>' if msg else ''}
+    <form method="post" action="/settings">
+        <div class="form-section">
+            <h5>Параметры Marzban</h5>
+            <div class="mb-3">
+                <label class="form-label">MARZBAN_URL</label>
+                <input name="MARZBAN_URL" class="form-control" value="{MARZBAN_URL or ''}" placeholder="https://marzban.example.com">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">MARZBAN_ADMIN_USER</label>
+                <input name="MARZBAN_ADMIN_USER" class="form-control" value="{MARZBAN_ADMIN_USER or ''}" placeholder="admin">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">MARZBAN_ADMIN_PASS</label>
+                <input name="MARZBAN_ADMIN_PASS" type="password" class="form-control" placeholder="введите новый пароль или оставьте пустым">
+                <div class="form-text">Текущий: {marz_pass_display}</div>
+            </div>
+            <div class="form-check mb-3">
+                <input class="form-check-input" type="checkbox" name="IP_AGENT_ENABLED" id="ipAgentEnabled" {"checked" if IP_AGENT_ENABLED else ""}>
+                <label class="form-check-label" for="ipAgentEnabled">Проверять IP-агент нод</label>
+            </div>
+        </div>
 
-    <button class="btn btn-primary">Сохранить</button>
-</form>
-<form method="post" action="/settings/test" class="mt-3">
-  <button class="btn btn-outline-success">Отправить тестовое уведомление</button>
-</form>
-<div class="mt-4"><a href="/">К дашборду</a></div>
-</div></body></html>"""
+        <div class="form-section">
+            <h5>Параметры Telegram</h5>
+            <div class="mb-3">
+                <label class="form-label">TELEGRAM_PROXY_URL</label>
+                <input name="TELEGRAM_PROXY_URL" class="form-control" value="{TELEGRAM_PROXY_URL or ''}" placeholder="https://proxy.example">
+            </div>
+            <div class="mb-3">
+                <label class="form-label">TELEGRAM_BOT_TOKEN</label>
+                <input name="TELEGRAM_BOT_TOKEN" type="text" class="form-control" value="{TELEGRAM_BOT_TOKEN or ''}" placeholder="токен бота">
+                <div class="form-text">Текущий: {token_display}</div>
+            </div>
+            <div class="mb-3">
+                <label class="form-label">TELEGRAM_CHAT_ID</label>
+                <input name="TELEGRAM_CHAT_ID" class="form-control" value="{TELEGRAM_CHAT_ID or ''}" placeholder="чат_ID">
+            </div>
+        </div>
+
+        <div class="form-section">
+            <h5>Фильтр статусов для уведомлений</h5>
+            <div class="form-check mb-2">
+                <input class="form-check-input" type="checkbox" name="TELEGRAM_NOTIFY_ON_ONLINE" id="notifyOnline" {"checked" if TELEGRAM_NOTIFY_ON_ONLINE else ""}>
+                <label class="form-check-label" for="notifyOnline">Уведомлять при подключении ноды (online)</label>
+            </div>
+            <div class="form-check mb-2">
+                <input class="form-check-input" type="checkbox" name="TELEGRAM_NOTIFY_ON_OFFLINE" id="notifyOffline" {"checked" if TELEGRAM_NOTIFY_ON_OFFLINE else ""}>
+                <label class="form-check-label" for="notifyOffline">Уведомлять при отключении ноды (offline)</label>
+            </div>
+            <div class="form-check">
+                <input class="form-check-input" type="checkbox" name="TELEGRAM_NOTIFY_ON_CONNECTING" id="notifyConnecting" {"checked" if TELEGRAM_NOTIFY_ON_CONNECTING else ""}>
+                <label class="form-check-label" for="notifyConnecting">Уведомлять о переподключении ноды (connecting)</label>
+            </div>
+        </div>
+
+        <button type="submit" class="btn btn-primary">Сохранить</button>
+    </form>
+
+        <form method="post" action="/settings/test" class="mt-3">
+          <button class="btn btn-outline-success">Отправить тестовое уведомление</button>
+        </form>
+
+        <a href="https://github.com/MakarSPB/marz-balancer" target="_blank" rel="noopener noreferrer" class="footer-link">&copy; MakarSPB</a>
+    </body>
+    </html>"""
     return HTMLResponse(content=html)
 
 
