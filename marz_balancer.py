@@ -18,6 +18,13 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 load_dotenv()
 
+
+def _to_bool(value: Optional[str], default: bool = False) -> bool:
+    if value is None:
+        return default
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+
 MARZBAN_URL = os.getenv("MARZBAN_URL", "").rstrip("/")
 MARZBAN_ADMIN_USER = os.getenv("MARZBAN_ADMIN_USER", "")
 MARZBAN_ADMIN_PASS = os.getenv("MARZBAN_ADMIN_PASS", "")
@@ -25,6 +32,7 @@ POLL_INTERVAL = float(os.getenv("POLL_INTERVAL", "5"))
 APP_PORT = int(os.getenv("APP_PORT", "8023"))
 IP_AGENT_PORT = os.getenv("IP_AGENT_PORT", "").strip()
 IP_AGENT_SCHEME = os.getenv("IP_AGENT_SCHEME", "http").strip()
+IP_AGENT_ENABLED = _to_bool(os.getenv("IP_AGENT_ENABLED", "1"), default=True)
 TELEGRAM_PROXY_URL = os.getenv("TELEGRAM_PROXY_URL", "").strip().rstrip("/")
 TELEGRAM_API_BASE = TELEGRAM_PROXY_URL or "https://api.telegram.org"
 
@@ -101,6 +109,7 @@ def _save_settings_db(updates: Dict[str, str]) -> bool:
 
 def _apply_saved_settings() -> None:
     global MARZBAN_URL, MARZBAN_ADMIN_USER, MARZBAN_ADMIN_PASS
+    global IP_AGENT_ENABLED
     global TELEGRAM_PROXY_URL, TELEGRAM_API_BASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
     saved = _read_settings_db()
     if not saved:
@@ -112,6 +121,9 @@ def _apply_saved_settings() -> None:
         MARZBAN_ADMIN_USER = (saved.get("MARZBAN_ADMIN_USER", "") or "").strip()
     if "MARZBAN_ADMIN_PASS" in saved:
         MARZBAN_ADMIN_PASS = (saved.get("MARZBAN_ADMIN_PASS", "") or "").strip()
+
+    if "IP_AGENT_ENABLED" in saved:
+        IP_AGENT_ENABLED = _to_bool(saved.get("IP_AGENT_ENABLED"), default=True)
 
     if "TELEGRAM_PROXY_URL" in saved:
         TELEGRAM_PROXY_URL = (saved.get("TELEGRAM_PROXY_URL", "") or "").strip().rstrip("/")
@@ -310,7 +322,7 @@ def _build_ip_agent_base(node: Dict[str, Any]) -> Optional[str]:
 async def fetch_node_clients(session: aiohttp.ClientSession, node: Dict[str, Any]) -> Dict[str, Any]:
     result = {"count": 0, "clients": [], "detected_path": None, "error": None}
     base_ip_agent = _build_ip_agent_base(node)
-    if base_ip_agent:
+    if IP_AGENT_ENABLED and base_ip_agent:
         res = await _try_node_path(session, base_ip_agent, "/connections", timeout_s=5)
         if res is not None and not (isinstance(res, dict) and res.get("error")):
             norm = _normalize_node_response(res)
@@ -706,6 +718,10 @@ async def settings_get(request: Request):
     <input name="MARZBAN_ADMIN_PASS" type="password" class="form-control" value="" placeholder="введите новый пароль или оставьте пустым">
     <div class="form-text">Текущий: {marz_pass_display}</div>
   </div>
+  <div class="form-check mb-3">
+    <input class="form-check-input" type="checkbox" name="IP_AGENT_ENABLED" id="ipAgentEnabled" {"checked" if IP_AGENT_ENABLED else ""}>
+    <label class="form-check-label" for="ipAgentEnabled">Проверять IP-агент нод</label>
+  </div>
 
   <h5 class="mb-3 mt-4">Telegram уведомления</h5>
   <div class="mb-3">
@@ -735,6 +751,7 @@ async def settings_get(request: Request):
 @APP.post("/settings")
 async def settings_post(request: Request):
     global MARZBAN_URL, MARZBAN_ADMIN_USER, MARZBAN_ADMIN_PASS
+    global IP_AGENT_ENABLED
     global TELEGRAM_PROXY_URL, TELEGRAM_API_BASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
     raw_body = (await request.body()).decode("utf-8", errors="ignore")
     form = parse_qs(raw_body, keep_blank_values=True)
@@ -742,6 +759,7 @@ async def settings_post(request: Request):
     marzban_url = (form.get("MARZBAN_URL", [""])[0] or "").strip().rstrip("/")
     marzban_user = (form.get("MARZBAN_ADMIN_USER", [""])[0] or "").strip()
     marzban_pass = (form.get("MARZBAN_ADMIN_PASS", [""])[0] or "").strip()
+    ip_agent_enabled = "IP_AGENT_ENABLED" in form
 
     proxy = (form.get("TELEGRAM_PROXY_URL", [""])[0] or "").strip().rstrip("/")
     bot = (form.get("TELEGRAM_BOT_TOKEN", [""])[0] or "").strip()
@@ -754,6 +772,9 @@ async def settings_post(request: Request):
         updates["MARZBAN_ADMIN_USER"] = marzban_user
     if marzban_pass:
         updates["MARZBAN_ADMIN_PASS"] = marzban_pass
+
+    if ip_agent_enabled != IP_AGENT_ENABLED:
+        updates["IP_AGENT_ENABLED"] = "1" if ip_agent_enabled else "0"
 
     if proxy != TELEGRAM_PROXY_URL:
         updates["TELEGRAM_PROXY_URL"] = proxy
@@ -775,6 +796,9 @@ async def settings_post(request: Request):
         MARZBAN_ADMIN_PASS = updates["MARZBAN_ADMIN_PASS"]
         _token_cache["token"] = None
         _token_cache["fetched_at"] = 0
+
+    if "IP_AGENT_ENABLED" in updates:
+        IP_AGENT_ENABLED = _to_bool(updates["IP_AGENT_ENABLED"], default=True)
 
     if "TELEGRAM_PROXY_URL" in updates:
         TELEGRAM_PROXY_URL = updates["TELEGRAM_PROXY_URL"]
