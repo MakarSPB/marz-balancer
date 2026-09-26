@@ -4,6 +4,7 @@ import asyncio
 import subprocess
 import re
 import secrets
+from urllib.parse import parse_qs
 from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -693,15 +694,16 @@ async def settings_get(request: Request):
 async def settings_post(request: Request):
     global MARZBAN_URL, MARZBAN_ADMIN_USER, MARZBAN_ADMIN_PASS
     global TELEGRAM_PROXY_URL, TELEGRAM_API_BASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-    form = await request.form()
+    raw_body = (await request.body()).decode("utf-8", errors="ignore")
+    form = parse_qs(raw_body, keep_blank_values=True)
 
-    marzban_url = form.get("MARZBAN_URL", "").strip().rstrip("/")
-    marzban_user = form.get("MARZBAN_ADMIN_USER", "").strip()
-    marzban_pass = form.get("MARZBAN_ADMIN_PASS", "").strip()
+    marzban_url = (form.get("MARZBAN_URL", [""])[0] or "").strip().rstrip("/")
+    marzban_user = (form.get("MARZBAN_ADMIN_USER", [""])[0] or "").strip()
+    marzban_pass = (form.get("MARZBAN_ADMIN_PASS", [""])[0] or "").strip()
 
-    proxy = form.get("TELEGRAM_PROXY_URL", "").strip().rstrip("/")
-    bot = form.get("TELEGRAM_BOT_TOKEN", "").strip()
-    chat = form.get("TELEGRAM_CHAT_ID", "").strip()
+    proxy = (form.get("TELEGRAM_PROXY_URL", [""])[0] or "").strip().rstrip("/")
+    bot = (form.get("TELEGRAM_BOT_TOKEN", [""])[0] or "").strip()
+    chat = (form.get("TELEGRAM_CHAT_ID", [""])[0] or "").strip()
 
     updates: Dict[str, str] = {}
     if marzban_url != MARZBAN_URL:
