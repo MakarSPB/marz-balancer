@@ -58,6 +58,7 @@ stats: Dict[str, Any] = {
     "port_8443": {"unique_clients": 0, "clients": []},
 }
 _token_cache: Dict[str, Any] = {"token": None, "fetched_at": 0, "ttl": 300}
+_last_master_error = ""
 
 
 def _init_settings_db() -> bool:
@@ -130,7 +131,9 @@ _apply_saved_settings()
 
 
 async def _fetch_token(session: aiohttp.ClientSession) -> Optional[str]:
+    global _last_master_error
     if not MARZBAN_URL or not MARZBAN_ADMIN_USER or not MARZBAN_ADMIN_PASS:
+        _last_master_error = "MARZBAN settings are incomplete (url/user/pass)"
         return None
     now = time.time()
     if _token_cache["token"] and now - _token_cache["fetched_at"] < _token_cache["ttl"]:
@@ -141,19 +144,25 @@ async def _fetch_token(session: aiohttp.ClientSession) -> Optional[str]:
     try:
         async with session.post(url, data=data, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             if resp.status != 200:
+                _last_master_error = f"token request failed: {resp.status} {resp.reason}"
                 return None
             j = await resp.json()
             token = j.get("access_token") or j.get("token")
             if token:
                 _token_cache["token"] = token
                 _token_cache["fetched_at"] = now
+                _last_master_error = ""
                 return token
-    except Exception:
+            _last_master_error = "token not found in response"
+    except Exception as ex:
+        _last_master_error = f"token request exception: {ex}"
         return None
     return None
 
 async def _fetch_nodes(session: aiohttp.ClientSession, token: Optional[str]) -> Optional[List[Dict[str, Any]]]:
+    global _last_master_error
     if not MARZBAN_URL:
+        _last_master_error = "MARZBAN_URL is empty"
         return None
     headers = {}
     if token:
@@ -162,9 +171,12 @@ async def _fetch_nodes(session: aiohttp.ClientSession, token: Optional[str]) -> 
     try:
         async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             if resp.status != 200:
+                _last_master_error = f"nodes request failed: {resp.status} {resp.reason}"
                 return None
+            _last_master_error = ""
             return await resp.json()
-    except Exception:
+    except Exception as ex:
+        _last_master_error = f"nodes request exception: {ex}"
         return None
 
 async def _fetch_system(session: aiohttp.ClientSession, token: Optional[str]) -> Optional[Dict[str, Any]]:
@@ -409,7 +421,12 @@ async def poll_loop():
                 stats["users_usage"] = users_usage
 
                 if nodes is None:
-                    stats["error"] = "failed to fetch nodes"
+                    stats["error"] = _last_master_error or "failed to fetch nodes"
+                    stats["debug"] = {
+                        "marzban_url": MARZBAN_URL,
+                        "marzban_user_set": bool(MARZBAN_ADMIN_USER),
+                        "marzban_pass_set": bool(MARZBAN_ADMIN_PASS),
+                    }
                     stats["nodes"] = []
                     stats["last_update"] = time.time()
                     await asyncio.sleep(POLL_INTERVAL)
@@ -630,7 +647,7 @@ async def index(request: Request):
                 <p>Состояние нод и агрегированная статистика в реальном времени</p>
             </div>
             <div class="d-flex gap-2 align-items-center">
-                <a href="/settings" class="btn btn-sm btn-outline-light">Настройки уведомлений</a>
+                <a href="/settings" class="btn btn-sm btn-outline-light">Настройки</a>
                 <span class="badge text-bg-secondary">Обновлено: {last_str}</span>
             </div>
         </section>
@@ -783,7 +800,7 @@ async def settings_test_notification():
     async with aiohttp.ClientSession() as session:
         sent = await send_telegram_message(
             session,
-            "привт! я монитор нод marz. Я подключился",
+            "привет! я монитор нод marz. Я подключился",
             force=True,
         )
     msg = "Тестовое уведомление отправлено" if sent else "Не удалось отправить тестовое уведомление"
