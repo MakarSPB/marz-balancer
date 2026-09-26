@@ -37,7 +37,7 @@ TELEGRAM_MIN_INTERVAL = int(os.getenv("TELEGRAM_MIN_INTERVAL", "300"))
 UI_LOGIN = os.getenv("UI_LOGIN", "").strip()
 UI_PASSWORD = os.getenv("UI_PASSWORD", "").strip()
 
-SETTINGS_DB_PATH = os.getenv("SETTINGS_DB_PATH", "data/settings.db").strip() or "data/settings.db"
+SETTINGS_DB_PATH = os.getenv("SETTINGS_DB_PATH", "/data/settings.db").strip() or "/data/settings.db"
 MONITOR_PORT = int(os.getenv("MONITOR_PORT", "8443"))
 
 NODE_CANDIDATE_PATHS = [
