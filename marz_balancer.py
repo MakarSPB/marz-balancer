@@ -63,6 +63,7 @@ stats: Dict[str, Any] = {
     "nodes_usage": None,
     "users_usage": None,
     "telegram_api_base": TELEGRAM_API_BASE,
+    "reconnect_attempts": [],
     "port_8443": {"unique_clients": 0, "clients": []},
 }
 _token_cache: Dict[str, Any] = {"token": None, "fetched_at": 0, "ttl": 300}
@@ -191,6 +192,26 @@ async def _fetch_nodes(session: aiohttp.ClientSession, token: Optional[str]) -> 
     except Exception as ex:
         _last_master_error = f"nodes request exception: {ex}"
         return None
+
+async def _reconnect_node(session: aiohttp.ClientSession, token: Optional[str], node_id: Any) -> Dict[str, Any]:
+    if not MARZBAN_URL:
+        return {"ok": False, "error": "MARZBAN_URL is empty"}
+    if not token:
+        return {"ok": False, "error": "token is missing"}
+    if node_id is None:
+        return {"ok": False, "error": "node_id is missing"}
+
+    headers = {"Authorization": f"Bearer {token}"}
+    url = f"{MARZBAN_URL}/api/node/{node_id}/reconnect"
+    try:
+        async with session.post(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status not in (200, 202, 204):
+                body = await resp.text()
+                return {"ok": False, "error": f"{resp.status} {resp.reason}", "body": body[:300]}
+            return {"ok": True}
+    except Exception as ex:
+        return {"ok": False, "error": str(ex)}
+
 
 async def _fetch_system(session: aiohttp.ClientSession, token: Optional[str]) -> Optional[Dict[str, Any]]:
     if not MARZBAN_URL:
@@ -492,6 +513,24 @@ async def poll_loop():
                 if status_change_messages:
                     for message in status_change_messages:
                         await send_telegram_message(session, message, force=True)
+
+                reconnect_attempts: List[Dict[str, Any]] = []
+                for entry in node_entries:
+                    status_value = str(entry.get("status") or "").strip().lower()
+                    if status_value in ("connected", "online"):
+                        continue
+                    reconnect_result = await _reconnect_node(session, token, entry.get("id"))
+                    reconnect_attempts.append(
+                        {
+                            "node_id": entry.get("id"),
+                            "node_name": entry.get("name") or entry.get("address"),
+                            "status": entry.get("status"),
+                            "ok": reconnect_result.get("ok", False),
+                            "error": reconnect_result.get("error"),
+                        }
+                    )
+
+                stats["reconnect_attempts"] = reconnect_attempts
 
                 if nodes_usage and isinstance(nodes_usage, dict):
                     usages = nodes_usage.get("usages") or []
