@@ -681,7 +681,7 @@ async def index(request: Request):
 @APP.get("/settings", response_class=HTMLResponse)
 async def settings_get(request: Request):
     msg = request.query_params.get("msg", "")
-    token_display = "задан" if TELEGRAM_BOT_TOKEN else "не задан"
+    token_display = TELEGRAM_BOT_TOKEN or "не задан"
     marz_pass_display = "задан" if MARZBAN_ADMIN_PASS else "не задан"
 
     html = f"""<!doctype html>
@@ -714,7 +714,7 @@ async def settings_get(request: Request):
   </div>
   <div class="mb-3">
     <label class="form-label">TELEGRAM_BOT_TOKEN</label>
-    <input name="TELEGRAM_BOT_TOKEN" type="password" class="form-control" value="" placeholder="введите новый токен или оставьте пустым">
+    <input name="TELEGRAM_BOT_TOKEN" type="text" class="form-control" value="{TELEGRAM_BOT_TOKEN or ''}" placeholder="токен бота">
     <div class="form-text">Текущий: {token_display}</div>
   </div>
   <div class="mb-3">
