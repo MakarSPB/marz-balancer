@@ -40,6 +40,9 @@ TELEGRAM_API_BASE = TELEGRAM_PROXY_URL or "https://api.telegram.org"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 TELEGRAM_MIN_INTERVAL = int(os.getenv("TELEGRAM_MIN_INTERVAL", "300"))
+TELEGRAM_NOTIFY_ON_ONLINE = _to_bool(os.getenv("TELEGRAM_NOTIFY_ON_ONLINE", "1"), default=True)
+TELEGRAM_NOTIFY_ON_OFFLINE = _to_bool(os.getenv("TELEGRAM_NOTIFY_ON_OFFLINE", "1"), default=True)
+TELEGRAM_NOTIFY_ON_CONNECTING = _to_bool(os.getenv("TELEGRAM_NOTIFY_ON_CONNECTING", "0"), default=False)
 
 # UI auth
 UI_LOGIN = os.getenv("UI_LOGIN", "").strip()
@@ -113,7 +116,8 @@ def _apply_saved_settings() -> None:
     global MARZBAN_URL, MARZBAN_ADMIN_USER, MARZBAN_ADMIN_PASS
     global IP_AGENT_ENABLED
     global TELEGRAM_PROXY_URL, TELEGRAM_API_BASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
-    saved = _read_settings_db()
+    global TELEGRAM_NOTIFY_ON_ONLINE, TELEGRAM_NOTIFY_ON_OFFLINE, TELEGRAM_NOTIFY_ON_CONNECTING
+
     if not saved:
         return
 
@@ -133,6 +137,13 @@ def _apply_saved_settings() -> None:
         TELEGRAM_BOT_TOKEN = (saved.get("TELEGRAM_BOT_TOKEN", "") or "").strip()
     if "TELEGRAM_CHAT_ID" in saved:
         TELEGRAM_CHAT_ID = (saved.get("TELEGRAM_CHAT_ID", "") or "").strip()
+
+    if "TELEGRAM_NOTIFY_ON_ONLINE" in saved:
+        TELEGRAM_NOTIFY_ON_ONLINE = _to_bool(saved.get("TELEGRAM_NOTIFY_ON_ONLINE"), default=True)
+    if "TELEGRAM_NOTIFY_ON_OFFLINE" in saved:
+        TELEGRAM_NOTIFY_ON_OFFLINE = _to_bool(saved.get("TELEGRAM_NOTIFY_ON_OFFLINE"), default=True)
+    if "TELEGRAM_NOTIFY_ON_CONNECTING" in saved:
+        TELEGRAM_NOTIFY_ON_CONNECTING = _to_bool(saved.get("TELEGRAM_NOTIFY_ON_CONNECTING"), default=False)
 
     TELEGRAM_API_BASE = TELEGRAM_PROXY_URL or "https://api.telegram.org"
     stats["telegram_api_base"] = TELEGRAM_API_BASE
@@ -421,22 +432,38 @@ def get_unique_remote_ips(port: int) -> List[str]:
 
 # last-sent timestamp to avoid spamming
 _tg_last_sent: Dict[str, float] = {"at": 0.0}
+_tg_spam_cache: Dict[str, Dict[str, Any]] = {}  # message_hash -> {timestamp, content}
+_TELEGRAM_SPAM_TTL = 300  # 5 minutes
 
 async def send_telegram_message(session: aiohttp.ClientSession, text: str, force: bool = False) -> bool:
     """Отправляет текстовое уведомление в указанный чат Telegram через configured proxy/base.
     Возвращает True при успешной отправке, False в противном случае или если параметры не заданы.
+    Защита от спама: не отправляет одинаковые сообщения чаще чем раз в 5 минут (если не force=True).
     """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
         return False
+
     now = time.time()
-    try:
-        if not force and now - _tg_last_sent.get("at", 0) < TELEGRAM_MIN_INTERVAL:
+    msg_hash = hash(text)
+
+    # Спам-кэш: проверяем, отправляли ли мы это сообщение недавно
+    if not force and msg_hash in _tg_spam_cache:
+        cached = _tg_spam_cache[msg_hash]
+        if now - cached["timestamp"] < _TELEGRAM_SPAM_TTL:
             return False
+
+    # Проверка интервала между сообщениями
+    if not force and now - _tg_last_sent.get("at", 0) < TELEGRAM_MIN_INTERVAL:
+        return False
+
+    try:
         url = f"{TELEGRAM_API_BASE}/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
             if resp.status == 200:
                 _tg_last_sent["at"] = now
+                # Добавляем в спам-кэш
+                _tg_spam_cache[msg_hash] = {"timestamp": now, "content": text}
                 return True
     except Exception:
         return False
@@ -497,7 +524,7 @@ async def poll_loop():
                     }
                     node_entries.append(entry)
 
-                status_change_messages: List[str] = []
+                status_change_messages: List[Dict[str, Any]] = []
                 for entry in node_entries:
                     node_key = str(entry.get("id")) if entry.get("id") is not None else (entry.get("name") or entry.get("address") or "")
                     if not node_key:
@@ -511,8 +538,8 @@ async def poll_loop():
                         _node_status_cache[node_key] = current_state
 
                 if status_change_messages:
-                    for message in status_change_messages:
-                        await send_telegram_message(session, message, force=True)
+                    for msg_dict in status_change_messages:
+                        await send_telegram_message(session, msg_dict["text"], force=True)
 
                 reconnect_attempts: List[Dict[str, Any]] = []
                 for entry in node_entries:
@@ -805,10 +832,28 @@ async def settings_get(request: Request):
   </div>
   <div class="mb-3">
     <label class="form-label">TELEGRAM_CHAT_ID</label>
-    <input name="TELEGRAM_CHAT_ID" class="form-control" value="{TELEGRAM_CHAT_ID or ''}" placeholder="чат_ID">
-  </div>
+       <input name="TELEGRAM_CHAT_ID" class="form-control" value="{TELEGRAM_CHAT_ID or ''}" placeholder="чат_ID">
+     </div>
 
-  <button class="btn btn-primary">Сохранить</button>
+    <div class="card mb-3">
+      <div class="card-header">Фильтр статусов для уведомлений</div>
+      <div class="card-body">
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" name="TELEGRAM_NOTIFY_ON_ONLINE" id="notifyOnline" {"checked" if TELEGRAM_NOTIFY_ON_ONLINE else ""}>
+          <label class="form-check-label" for="notifyOnline">Уведомлять при подключении ноды (online)</label>
+        </div>
+        <div class="form-check mb-2">
+          <input class="form-check-input" type="checkbox" name="TELEGRAM_NOTIFY_ON_OFFLINE" id="notifyOffline" {"checked" if TELEGRAM_NOTIFY_ON_OFFLINE else ""}>
+          <label class="form-check-label" for="notifyOffline">Уведомлять при отключении ноды (offline)</label>
+        </div>
+        <div class="form-check">
+          <input class="form-check-input" type="checkbox" name="TELEGRAM_NOTIFY_ON_CONNECTING" id="notifyConnecting" {"checked" if TELEGRAM_NOTIFY_ON_CONNECTING else ""}>
+          <label class="form-check-label" for="notifyConnecting">Уведомлять о переподключении ноды (connecting)</label>
+        </div>
+      </div>
+    </div>
+
+    <button class="btn btn-primary">Сохранить</button>
 </form>
 <form method="post" action="/settings/test" class="mt-3">
   <button class="btn btn-outline-success">Отправить тестовое уведомление</button>
@@ -823,6 +868,7 @@ async def settings_post(request: Request):
     global MARZBAN_URL, MARZBAN_ADMIN_USER, MARZBAN_ADMIN_PASS
     global IP_AGENT_ENABLED
     global TELEGRAM_PROXY_URL, TELEGRAM_API_BASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+    global TELEGRAM_NOTIFY_ON_ONLINE, TELEGRAM_NOTIFY_ON_OFFLINE, TELEGRAM_NOTIFY_ON_CONNECTING
     raw_body = (await request.body()).decode("utf-8", errors="ignore")
     form = parse_qs(raw_body, keep_blank_values=True)
 
@@ -834,6 +880,10 @@ async def settings_post(request: Request):
     proxy = (form.get("TELEGRAM_PROXY_URL", [""])[0] or "").strip().rstrip("/")
     bot = (form.get("TELEGRAM_BOT_TOKEN", [""])[0] or "").strip()
     chat = (form.get("TELEGRAM_CHAT_ID", [""])[0] or "").strip()
+
+    notify_online = "TELEGRAM_NOTIFY_ON_ONLINE" in form
+    notify_offline = "TELEGRAM_NOTIFY_ON_OFFLINE" in form
+    notify_connecting = "TELEGRAM_NOTIFY_ON_CONNECTING" in form
 
     updates: Dict[str, str] = {}
     if marzban_url != MARZBAN_URL:
@@ -852,6 +902,13 @@ async def settings_post(request: Request):
         updates["TELEGRAM_BOT_TOKEN"] = bot
     if chat != TELEGRAM_CHAT_ID:
         updates["TELEGRAM_CHAT_ID"] = chat
+
+    if notify_online != TELEGRAM_NOTIFY_ON_ONLINE:
+        updates["TELEGRAM_NOTIFY_ON_ONLINE"] = "1" if notify_online else "0"
+    if notify_offline != TELEGRAM_NOTIFY_ON_OFFLINE:
+        updates["TELEGRAM_NOTIFY_ON_OFFLINE"] = "1" if notify_offline else "0"
+    if notify_connecting != TELEGRAM_NOTIFY_ON_CONNECTING:
+        updates["TELEGRAM_NOTIFY_ON_CONNECTING"] = "1" if notify_connecting else "0"
 
     # apply updates in-memory
     if "MARZBAN_URL" in updates:
@@ -878,6 +935,13 @@ async def settings_post(request: Request):
         TELEGRAM_BOT_TOKEN = updates["TELEGRAM_BOT_TOKEN"]
     if "TELEGRAM_CHAT_ID" in updates:
         TELEGRAM_CHAT_ID = updates["TELEGRAM_CHAT_ID"]
+
+    if "TELEGRAM_NOTIFY_ON_ONLINE" in updates:
+        TELEGRAM_NOTIFY_ON_ONLINE = _to_bool(updates["TELEGRAM_NOTIFY_ON_ONLINE"], default=True)
+    if "TELEGRAM_NOTIFY_ON_OFFLINE" in updates:
+        TELEGRAM_NOTIFY_ON_OFFLINE = _to_bool(updates["TELEGRAM_NOTIFY_ON_OFFLINE"], default=True)
+    if "TELEGRAM_NOTIFY_ON_CONNECTING" in updates:
+        TELEGRAM_NOTIFY_ON_CONNECTING = _to_bool(updates["TELEGRAM_NOTIFY_ON_CONNECTING"], default=False)
 
     # persist to sqlite
     if updates:
