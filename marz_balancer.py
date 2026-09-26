@@ -556,6 +556,7 @@ async def poll_loop():
                 if status_change_messages:
                     for message in status_change_messages:
                         await send_telegram_message(session, message, force=True)
+                reconnect_attempts = []
                 for entry in node_entries:
                     status_value = str(entry.get("status") or "").strip().lower()
                     if status_value in ("connected", "online"):
@@ -830,13 +831,13 @@ async def reconnects_page(request: Request):
         for attempt in reconnect_attempts:
             status_badge = "bg-success" if attempt.get("ok") else "bg-danger"
             status_text = "✓ OK" if attempt.get("ok") else "✗ FAILED"
-            error_info = f"<div style='color: #ffa9c9; font-size: 0.9rem; margin-top: 8px;'><strong>Ошибка:</strong> {attempt.get('error')}</div>" if attempt.get("error") else ""
+            error_info = f'<div style="color: #ffa9c9; font-size: 0.9rem; margin-top: 8px;"><strong>Ошибка:</strong> {attempt.get("error")}</div>' if attempt.get("error") else ""
 
             reconnect_items += f"""
             <article class="node-card">
                 <div class="node-card-head">
                     <h3>{attempt.get('node_name') or f"Нода #{attempt.get('node_id')}"}</h3>
-                    <span class="badge bg-{status_badge}">{status_text}</span>
+                    <span class="badge {status_badge}">{status_text}</span>
                 </div>
                 <div class="node-grid">
                     <div><span>ID</span><strong>{attempt.get('node_id')}</strong></div>
