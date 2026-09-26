@@ -118,6 +118,7 @@ def _apply_saved_settings() -> None:
     global TELEGRAM_PROXY_URL, TELEGRAM_API_BASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
     global TELEGRAM_NOTIFY_ON_ONLINE, TELEGRAM_NOTIFY_ON_OFFLINE, TELEGRAM_NOTIFY_ON_CONNECTING
 
+    saved = _read_settings_db()
     if not saved:
         return
 
