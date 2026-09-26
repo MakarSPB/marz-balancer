@@ -3,6 +3,7 @@ import time
 import asyncio
 import subprocess
 import re
+import sqlite3
 import secrets
 from urllib.parse import parse_qs
 from typing import Dict, Any, Optional, List
@@ -36,6 +37,7 @@ TELEGRAM_MIN_INTERVAL = int(os.getenv("TELEGRAM_MIN_INTERVAL", "300"))
 UI_LOGIN = os.getenv("UI_LOGIN", "").strip()
 UI_PASSWORD = os.getenv("UI_PASSWORD", "").strip()
 
+SETTINGS_DB_PATH = os.getenv("SETTINGS_DB_PATH", "data/settings.db").strip() or "data/settings.db"
 MONITOR_PORT = int(os.getenv("MONITOR_PORT", "8443"))
 
 NODE_CANDIDATE_PATHS = [
@@ -56,6 +58,76 @@ stats: Dict[str, Any] = {
     "port_8443": {"unique_clients": 0, "clients": []},
 }
 _token_cache: Dict[str, Any] = {"token": None, "fetched_at": 0, "ttl": 300}
+
+
+def _init_settings_db() -> bool:
+    try:
+        db_dir = os.path.dirname(SETTINGS_DB_PATH)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+        with sqlite3.connect(SETTINGS_DB_PATH) as conn:
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS app_settings (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+        return True
+    except Exception:
+        return False
+
+
+def _read_settings_db() -> Dict[str, str]:
+    try:
+        with sqlite3.connect(SETTINGS_DB_PATH) as conn:
+            rows = conn.execute("SELECT key, value FROM app_settings").fetchall()
+        return {k: v for k, v in rows}
+    except Exception:
+        return {}
+
+
+def _save_settings_db(updates: Dict[str, str]) -> bool:
+    if not updates:
+        return True
+    try:
+        with sqlite3.connect(SETTINGS_DB_PATH) as conn:
+            conn.executemany(
+                "INSERT INTO app_settings(key, value) VALUES(?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                list(updates.items()),
+            )
+        return True
+    except Exception:
+        return False
+
+
+def _apply_saved_settings() -> None:
+    global MARZBAN_URL, MARZBAN_ADMIN_USER, MARZBAN_ADMIN_PASS
+    global TELEGRAM_PROXY_URL, TELEGRAM_API_BASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+    saved = _read_settings_db()
+    if not saved:
+        return
+
+    if "MARZBAN_URL" in saved:
+        MARZBAN_URL = (saved.get("MARZBAN_URL", "") or "").strip().rstrip("/")
+    if "MARZBAN_ADMIN_USER" in saved:
+        MARZBAN_ADMIN_USER = (saved.get("MARZBAN_ADMIN_USER", "") or "").strip()
+    if "MARZBAN_ADMIN_PASS" in saved:
+        MARZBAN_ADMIN_PASS = (saved.get("MARZBAN_ADMIN_PASS", "") or "").strip()
+
+    if "TELEGRAM_PROXY_URL" in saved:
+        TELEGRAM_PROXY_URL = (saved.get("TELEGRAM_PROXY_URL", "") or "").strip().rstrip("/")
+    if "TELEGRAM_BOT_TOKEN" in saved:
+        TELEGRAM_BOT_TOKEN = (saved.get("TELEGRAM_BOT_TOKEN", "") or "").strip()
+    if "TELEGRAM_CHAT_ID" in saved:
+        TELEGRAM_CHAT_ID = (saved.get("TELEGRAM_CHAT_ID", "") or "").strip()
+
+    TELEGRAM_API_BASE = TELEGRAM_PROXY_URL or "https://api.telegram.org"
+    stats["telegram_api_base"] = TELEGRAM_API_BASE
+    _token_cache["token"] = None
+    _token_cache["fetched_at"] = 0
+
+
+_init_settings_db()
+_apply_saved_settings()
+
 
 async def _fetch_token(session: aiohttp.ClientSession) -> Optional[str]:
     if not MARZBAN_URL or not MARZBAN_ADMIN_USER or not MARZBAN_ADMIN_PASS:
@@ -589,53 +661,6 @@ async def index(request: Request):
     return HTMLResponse(content=html)
 
 
-def _write_env_file(updates: Dict[str, str], path: str = ".env") -> bool:
-    """Обновляет или создаёт .env файл, применяя ключи из updates.
-    Возвращает True при успешной записи, False при ошибках.
-    """
-    try:
-        existing = {}
-        lines: List[str] = []
-        if os.path.exists(path):
-            with open(path, "r", encoding="utf-8") as f:
-                for line in f.readlines():
-                    l = line.rstrip("\n")
-                    if "=" in l and not l.strip().startswith("#"):
-                        k, v = l.split("=", 1)
-                        existing[k] = v
-                        lines.append((k, v))
-                    else:
-                        lines.append((None, l))
-        # merge
-        for k, v in updates.items():
-            existing[k] = v
-
-        # build output
-        out_lines: List[str] = []
-        written = set()
-        for item in lines:
-            if item[0] is None:
-                out_lines.append(item[1])
-            else:
-                k = item[0]
-                if k in existing:
-                    out_lines.append(f"{k}={existing[k]}")
-                    written.add(k)
-                else:
-                    out_lines.append(f"{k}={item[1]}")
-
-        # append remaining
-        for k, v in existing.items():
-            if k not in written:
-                out_lines.append(f"{k}={v}")
-
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("\n".join(out_lines).strip() + "\n")
-        return True
-    except Exception:
-        return False
-
-
 @APP.get("/settings", response_class=HTMLResponse)
 async def settings_get(request: Request):
     msg = request.query_params.get("msg", "")
@@ -743,10 +768,10 @@ async def settings_post(request: Request):
     if "TELEGRAM_CHAT_ID" in updates:
         TELEGRAM_CHAT_ID = updates["TELEGRAM_CHAT_ID"]
 
-    # persist to .env (best-effort)
+    # persist to sqlite
     if updates:
-        ok = _write_env_file(updates, path=".env")
-        msg = "Настройки сохранены" if ok else "Настройки применены (не удалось записать .env)"
+        ok = _save_settings_db(updates)
+        msg = "Настройки сохранены" if ok else "Настройки применены (не удалось записать в sqlite)"
     else:
         msg = "Новых настроек не обнаружено"
 
