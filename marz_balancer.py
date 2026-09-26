@@ -3,14 +3,16 @@ import time
 import asyncio
 import subprocess
 import re
+import secrets
 from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 
 import aiohttp
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, Depends, HTTPException, status
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 load_dotenv()
 
@@ -28,6 +30,10 @@ TELEGRAM_API_BASE = TELEGRAM_PROXY_URL or "https://api.telegram.org"
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 TELEGRAM_MIN_INTERVAL = int(os.getenv("TELEGRAM_MIN_INTERVAL", "300"))
+
+# UI auth
+UI_LOGIN = os.getenv("UI_LOGIN", "").strip()
+UI_PASSWORD = os.getenv("UI_PASSWORD", "").strip()
 
 MONITOR_PORT = int(os.getenv("MONITOR_PORT", "8443"))
 
@@ -439,7 +445,32 @@ def get_usage_range(period: str) -> tuple[Optional[str], Optional[str]]:
         return (None, None)
     return (start, now.isoformat(timespec="seconds") + "Z")
 
-APP = FastAPI(lifespan=lifespan)
+
+security = HTTPBasic(auto_error=False)
+
+
+def require_ui_auth(credentials: Optional[HTTPBasicCredentials] = Depends(security)) -> str:
+    if not UI_LOGIN or not UI_PASSWORD:
+        raise HTTPException(status_code=503, detail="UI auth not configured")
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Authentication required",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+
+    is_login_ok = secrets.compare_digest(credentials.username, UI_LOGIN)
+    is_password_ok = secrets.compare_digest(credentials.password, UI_PASSWORD)
+    if not (is_login_ok and is_password_ok):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid credentials",
+            headers={"WWW-Authenticate": "Basic"},
+        )
+    return credentials.username
+
+
+APP = FastAPI(lifespan=lifespan, dependencies=[Depends(require_ui_auth)])
 
 @APP.get("/api/stats")
 async def api_stats():
