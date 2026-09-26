@@ -67,6 +67,7 @@ stats: Dict[str, Any] = {
 }
 _token_cache: Dict[str, Any] = {"token": None, "fetched_at": 0, "ttl": 300}
 _last_master_error = ""
+_node_status_cache: Dict[str, str] = {}
 
 
 def _init_settings_db() -> bool:
@@ -420,6 +421,15 @@ async def send_telegram_message(session: aiohttp.ClientSession, text: str, force
         return False
     return False
 
+
+def _normalize_node_state(status_value: Any) -> Optional[str]:
+    status_text = str(status_value or "").strip().lower()
+    if status_text in ("connected", "online", "healthy", "active", "up"):
+        return "online"
+    if status_text in ("disconnected", "offline", "error", "failed", "down"):
+        return "offline"
+    return None
+
 async def poll_loop():
     async with aiohttp.ClientSession() as session:
         while True:
@@ -465,6 +475,23 @@ async def poll_loop():
                         "downlink": None,
                     }
                     node_entries.append(entry)
+
+                status_change_messages: List[str] = []
+                for entry in node_entries:
+                    node_key = str(entry.get("id")) if entry.get("id") is not None else (entry.get("name") or entry.get("address") or "")
+                    if not node_key:
+                        continue
+                    current_state = _normalize_node_state(entry.get("status"))
+                    previous_state = _node_status_cache.get(node_key)
+                    if previous_state and current_state and previous_state != current_state:
+                        node_label = entry.get("name") or entry.get("address") or f"node-{node_key}"
+                        status_change_messages.append(f"Нода {node_label}: {previous_state} -> {current_state}")
+                    if current_state:
+                        _node_status_cache[node_key] = current_state
+
+                if status_change_messages:
+                    for message in status_change_messages:
+                        await send_telegram_message(session, message, force=True)
 
                 if nodes_usage and isinstance(nodes_usage, dict):
                     usages = nodes_usage.get("usages") or []
