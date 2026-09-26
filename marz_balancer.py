@@ -479,6 +479,16 @@ def _normalize_node_state(status_value: Any) -> Optional[str]:
         return "offline"
     return None
 
+def _should_notify_status(current_state: str) -> bool:
+    """Check if we should send notification for this status"""
+    if current_state == "online":
+        return TELEGRAM_NOTIFY_ON_ONLINE
+    elif current_state == "offline":
+        return TELEGRAM_NOTIFY_ON_OFFLINE
+    elif current_state == "connecting":
+        return TELEGRAM_NOTIFY_ON_CONNECTING
+    return False
+
 async def poll_loop():
     async with aiohttp.ClientSession() as session:
         while True:
@@ -525,7 +535,7 @@ async def poll_loop():
                     }
                     node_entries.append(entry)
 
-                status_change_messages: List[Dict[str, Any]] = []
+                status_change_messages: List[str] = []
                 for entry in node_entries:
                     node_key = str(entry.get("id")) if entry.get("id") is not None else (entry.get("name") or entry.get("address") or "")
                     if not node_key:
@@ -533,16 +543,19 @@ async def poll_loop():
                     current_state = _normalize_node_state(entry.get("status"))
                     previous_state = _node_status_cache.get(node_key)
                     if previous_state and current_state and previous_state != current_state:
+                        if _should_notify_status(current_state):
+                            node_label = entry.get("name") or entry.get("address") or f"node-{node_key}"
+                            status_change_messages.append(f"Нода {node_label}: {previous_state} -> {current_state}")
+                    elif not previous_state and current_state == "online" and TELEGRAM_NOTIFY_ON_ONLINE:
+                        # First time seeing this node and it's online
                         node_label = entry.get("name") or entry.get("address") or f"node-{node_key}"
-                        status_change_messages.append(f"Нода {node_label}: {previous_state} -> {current_state}")
+                        status_change_messages.append(f"Нода {node_label}: впервые обнаружена online")
                     if current_state:
                         _node_status_cache[node_key] = current_state
 
                 if status_change_messages:
-                    for msg_dict in status_change_messages:
-                        await send_telegram_message(session, msg_dict["text"], force=True)
-
-                reconnect_attempts: List[Dict[str, Any]] = []
+                    for message in status_change_messages:
+                        await send_telegram_message(session, message, force=True)
                 for entry in node_entries:
                     status_value = str(entry.get("status") or "").strip().lower()
                     if status_value in ("connected", "online"):
@@ -612,6 +625,12 @@ async def poll_loop():
 async def lifespan(app: FastAPI):
     if not MARZBAN_URL:
         stats["error"] = "MARZBAN_URL not configured"
+    # Send startup notification
+    await send_telegram_message(
+        None,
+        "Привет! Я монитор нод Marzban. Я подключился 👋",
+        force=True
+    )
     task = asyncio.create_task(poll_loop())
     try:
         yield
