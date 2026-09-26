@@ -293,7 +293,7 @@ def get_unique_remote_ips(port: int) -> List[str]:
 # last-sent timestamp to avoid spamming
 _tg_last_sent: Dict[str, float] = {"at": 0.0}
 
-async def send_telegram_message(session: aiohttp.ClientSession, text: str) -> bool:
+async def send_telegram_message(session: aiohttp.ClientSession, text: str, force: bool = False) -> bool:
     """Отправляет текстовое уведомление в указанный чат Telegram через configured proxy/base.
     Возвращает True при успешной отправке, False в противном случае или если параметры не заданы.
     """
@@ -301,7 +301,7 @@ async def send_telegram_message(session: aiohttp.ClientSession, text: str) -> bo
         return False
     now = time.time()
     try:
-        if now - _tg_last_sent.get("at", 0) < TELEGRAM_MIN_INTERVAL:
+        if not force and now - _tg_last_sent.get("at", 0) < TELEGRAM_MIN_INTERVAL:
             return False
         url = f"{TELEGRAM_API_BASE}/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
@@ -638,6 +638,9 @@ async def settings_get(request: Request):
   </div>
   <button class="btn btn-primary">Сохранить</button>
 </form>
+<form method="post" action="/settings/test" class="mt-3">
+  <button class="btn btn-outline-success">Отправить тестовое уведомление</button>
+</form>
 <div class="mt-4"><a href="/">К дашборду</a></div>
 </div></body></html>"""
     return HTMLResponse(content=html)
@@ -676,6 +679,18 @@ async def settings_post(request: Request):
     else:
         msg = "Новых настроек не обнаружено"
 
+    return RedirectResponse(url=f"/settings?msg={msg}", status_code=303)
+
+
+@APP.post("/settings/test")
+async def settings_test_notification():
+    async with aiohttp.ClientSession() as session:
+        sent = await send_telegram_message(
+            session,
+            "привт! я монитор нод marz. Я подключился",
+            force=True,
+        )
+    msg = "Тестовое уведомление отправлено" if sent else "Не удалось отправить тестовое уведомление"
     return RedirectResponse(url=f"/settings?msg={msg}", status_code=303)
 if __name__ == "__main__":
     import uvicorn
