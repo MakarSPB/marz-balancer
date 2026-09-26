@@ -9,8 +9,8 @@ from datetime import datetime, timedelta
 
 import aiohttp
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi import FastAPI, Request, Form
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 load_dotenv()
 
@@ -23,6 +23,11 @@ IP_AGENT_PORT = os.getenv("IP_AGENT_PORT", "").strip()
 IP_AGENT_SCHEME = os.getenv("IP_AGENT_SCHEME", "http").strip()
 TELEGRAM_PROXY_URL = os.getenv("TELEGRAM_PROXY_URL", "").strip().rstrip("/")
 TELEGRAM_API_BASE = TELEGRAM_PROXY_URL or "https://api.telegram.org"
+
+# Telegram notifications
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+TELEGRAM_MIN_INTERVAL = int(os.getenv("TELEGRAM_MIN_INTERVAL", "300"))
 
 MONITOR_PORT = int(os.getenv("MONITOR_PORT", "8443"))
 
@@ -284,6 +289,30 @@ def get_unique_remote_ips(port: int) -> List[str]:
     except Exception:
         return []
 
+
+# last-sent timestamp to avoid spamming
+_tg_last_sent: Dict[str, float] = {"at": 0.0}
+
+async def send_telegram_message(session: aiohttp.ClientSession, text: str) -> bool:
+    """Отправляет текстовое уведомление в указанный чат Telegram через configured proxy/base.
+    Возвращает True при успешной отправке, False в противном случае или если параметры не заданы.
+    """
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        return False
+    now = time.time()
+    try:
+        if now - _tg_last_sent.get("at", 0) < TELEGRAM_MIN_INTERVAL:
+            return False
+        url = f"{TELEGRAM_API_BASE}/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+        payload = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
+        async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+            if resp.status == 200:
+                _tg_last_sent["at"] = now
+                return True
+    except Exception:
+        return False
+    return False
+
 async def poll_loop():
     async with aiohttp.ClientSession() as session:
         while True:
@@ -364,6 +393,12 @@ async def poll_loop():
             except Exception as ex:
                 stats["error"] = str(ex)
                 stats["nodes"] = []
+                # отправляем уведомление в Telegram (если настроено) — не блокируем цикл
+                try:
+                    if TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID:
+                        asyncio.create_task(send_telegram_message(session, f"MarzBalancer error: {str(ex)}"))
+                except Exception:
+                    pass
                 stats["last_update"] = time.time()
             await asyncio.sleep(POLL_INTERVAL)
 
@@ -490,7 +525,10 @@ async def index(request: Request):
                 <h1>MarzBalancer Dashboard</h1>
                 <p>Состояние нод и агрегированная статистика в реальном времени</p>
             </div>
-            <span class="badge text-bg-secondary">Обновлено: {last_str}</span>
+            <div class="d-flex gap-2 align-items-center">
+                <a href="/settings" class="btn btn-sm btn-outline-light">Настройки уведомлений</a>
+                <span class="badge text-bg-secondary">Обновлено: {last_str}</span>
+            </div>
         </section>
 
         <section class="stats-grid">
@@ -517,6 +555,128 @@ async def index(request: Request):
 </body>
 </html>"""
     return HTMLResponse(content=html)
+
+
+def _write_env_file(updates: Dict[str, str], path: str = ".env") -> bool:
+    """Обновляет или создаёт .env файл, применяя ключи из updates.
+    Возвращает True при успешной записи, False при ошибках.
+    """
+    try:
+        existing = {}
+        lines: List[str] = []
+        if os.path.exists(path):
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f.readlines():
+                    l = line.rstrip("\n")
+                    if "=" in l and not l.strip().startswith("#"):
+                        k, v = l.split("=", 1)
+                        existing[k] = v
+                        lines.append((k, v))
+                    else:
+                        lines.append((None, l))
+        # merge
+        for k, v in updates.items():
+            existing[k] = v
+
+        # build output
+        out_lines: List[str] = []
+        written = set()
+        for item in lines:
+            if item[0] is None:
+                out_lines.append(item[1])
+            else:
+                k = item[0]
+                if k in existing:
+                    out_lines.append(f"{k}={existing[k]}")
+                    written.add(k)
+                else:
+                    out_lines.append(f"{k}={item[1]}")
+
+        # append remaining
+        for k, v in existing.items():
+            if k not in written:
+                out_lines.append(f"{k}={v}")
+
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("\n".join(out_lines).strip() + "\n")
+        return True
+    except Exception:
+        return False
+
+
+@APP.get("/settings", response_class=HTMLResponse)
+async def settings_get(request: Request):
+    msg = request.query_params.get("msg", "")
+    # mask token for display
+    token_display = TELEGRAM_BOT_TOKEN
+    if token_display:
+        if len(token_display) > 6:
+            token_display = "****" + token_display[-6:]
+        else:
+            token_display = "****"
+
+    html = f"""<!doctype html>
+<html lang="ru"><head><meta charset="utf-8"><title>Настройки MarzBalancer</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+</head><body class="bg-light"><div class="container py-4">
+<h1 class="mb-4">Настройки уведомлений</h1>
+{f'<div class="alert alert-success">{msg}</div>' if msg else ''}
+<form method="post" action="/settings">
+  <div class="mb-3">
+    <label class="form-label">TELEGRAM_PROXY_URL</label>
+    <input name="TELEGRAM_PROXY_URL" class="form-control" value="{TELEGRAM_PROXY_URL or ''}" placeholder="https://proxy.example">
+  </div>
+  <div class="mb-3">
+    <label class="form-label">TELEGRAM_BOT_TOKEN</label>
+    <input name="TELEGRAM_BOT_TOKEN" type="password" class="form-control" value="" placeholder="введите новый токен или оставьте пустым">
+    <div class="form-text">Текущий: {token_display or 'не задан'}</div>
+  </div>
+  <div class="mb-3">
+    <label class="form-label">TELEGRAM_CHAT_ID</label>
+    <input name="TELEGRAM_CHAT_ID" class="form-control" value="{TELEGRAM_CHAT_ID or ''}" placeholder="чат_ID">
+  </div>
+  <button class="btn btn-primary">Сохранить</button>
+</form>
+<div class="mt-4"><a href="/">К дашборду</a></div>
+</div></body></html>"""
+    return HTMLResponse(content=html)
+
+
+@APP.post("/settings")
+async def settings_post(request: Request):
+    global TELEGRAM_PROXY_URL, TELEGRAM_API_BASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
+    form = await request.form()
+    proxy = form.get("TELEGRAM_PROXY_URL", "").strip().rstrip("/")
+    bot = form.get("TELEGRAM_BOT_TOKEN", "").strip()
+    chat = form.get("TELEGRAM_CHAT_ID", "").strip()
+
+    updates: Dict[str, str] = {}
+    if proxy != TELEGRAM_PROXY_URL:
+        updates["TELEGRAM_PROXY_URL"] = proxy
+    if bot:
+        updates["TELEGRAM_BOT_TOKEN"] = bot
+    if chat != TELEGRAM_CHAT_ID:
+        updates["TELEGRAM_CHAT_ID"] = chat
+
+    # apply updates in-memory
+    if "TELEGRAM_PROXY_URL" in updates:
+        TELEGRAM_PROXY_URL = updates["TELEGRAM_PROXY_URL"]
+        TELEGRAM_API_BASE = TELEGRAM_PROXY_URL or "https://api.telegram.org"
+        stats["telegram_api_base"] = TELEGRAM_API_BASE
+    if "TELEGRAM_BOT_TOKEN" in updates:
+        TELEGRAM_BOT_TOKEN = updates["TELEGRAM_BOT_TOKEN"]
+    if "TELEGRAM_CHAT_ID" in updates:
+        TELEGRAM_CHAT_ID = updates["TELEGRAM_CHAT_ID"]
+
+    # persist to .env (best-effort)
+    if updates:
+        ok = _write_env_file(updates, path=".env")
+        msg = "Настройки сохранены" if ok else "Настройки применены (не удалось записать .env)"
+    else:
+        msg = "Новых настроек не обнаружено"
+
+    return RedirectResponse(url=f"/settings?msg={msg}", status_code=303)
 if __name__ == "__main__":
     import uvicorn
 
