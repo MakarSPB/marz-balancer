@@ -926,35 +926,35 @@ async def settings_get(request: Request):
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 <style>
-    body { background: #0b1020; color: #d8e1ff; margin: 0; }
-    .navbar-custom { background: #080e1f; border-bottom: 1px solid #27345b; padding: 12px 0; position: sticky; top: 0; z-index: 100; }
-    .navbar-title { font-weight: 700; font-size: 1.2rem; margin: 0; color: #d8e1ff; }
-    .nav-buttons { display: flex; gap: 8px; align-items: center; }
-    .nav-btn { padding: 6px 14px; border: 1px solid #4b6bb0; border-radius: 8px; text-decoration: none; color: #b9c8ef; font-size: 0.95rem; transition: all 0.2s; }
-    .nav-btn:hover { background: #1a2847; color: #d8e1ff; border-color: #6b8fd9; }
-    .nav-btn.active { background: #2b4a8c; color: #d8e1ff; border-color: #6b8fd9; }
-    .navbar-wrapper { max-width: 1280px; margin: 0 auto; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; }
-    .app-wrap { max-width: 1280px; margin: 0 auto; padding: 28px 20px 36px; }
-    .hero { margin-bottom:22px; }
-    .hero h1 { margin:0; font-size:1.8rem; font-weight:700; }
-    .hero p { margin:6px 0 0; color:#9fb0de; }
-    .form-section { background: #121a30; border:1px solid #2b3d69; border-radius:14px; padding:20px; margin-bottom:20px; }
-    .form-section h5 { color: #d8e1ff; margin-bottom: 16px; font-weight: 700; border-bottom: 1px solid #27345b; padding-bottom: 12px; }
-    .form-label { color: #b9c8ef; font-size: 0.95rem; }
-    .form-control { background: #0b0f1f; border: 1px solid #27345b; color: #d8e1ff; }
-    .form-control:focus { background: #131a30; border-color: #4b6bb0; color: #d8e1ff; box-shadow: 0 0 0 0.2rem rgba(75, 107, 176, 0.25); }
-    .form-check-input { background: #0b0f1f; border: 1px solid #27345b; }
-    .form-check-input:checked { background: #2b5a9c; border-color: #4b6bb0; }
-    .form-check-label { color: #b9c8ef; margin: 0; }
-    .form-text { color: #8ea2d9; }
-    .btn-primary { background: #2b5a9c; border: 1px solid #4b6bb0; color: #d8e1ff; }
-    .btn-primary:hover { background: #3a70b8; border-color: #6b8fd9; }
-    .btn-outline-success { border: 1px solid #27a745; color: #5fcd7d; }
-    .btn-outline-success:hover { background: #27a745; color: #d8e1ff; border-color: #27a745; }
-    .alert-success { background: #1a3a1f; border: 1px solid #2d5a3d; color: #7dd47d; }
-    .footer-link { position:fixed; right:16px; bottom:12px; color:#91a4dc; text-decoration:none; font-size:.85rem; opacity:.8; }
-    .footer-link:hover { opacity:1; color:#c7d5ff; }
-    @media (max-width: 700px) { .nav-buttons { flex-direction: column; width: 100%; margin-top: 12px; } }
+    body {{ background: #0b1020; color: #d8e1ff; margin: 0; }}
+    .navbar-custom {{ background: #080e1f; border-bottom: 1px solid #27345b; padding: 12px 0; position: sticky; top: 0; z-index: 100; }}
+    .navbar-title {{ font-weight: 700; font-size: 1.2rem; margin: 0; color: #d8e1ff; }}
+    .nav-buttons {{ display: flex; gap: 8px; align-items: center; }}
+    .nav-btn {{ padding: 6px 14px; border: 1px solid #4b6bb0; border-radius: 8px; text-decoration: none; color: #b9c8ef; font-size: 0.95rem; transition: all 0.2s; }}
+    .nav-btn:hover {{ background: #1a2847; color: #d8e1ff; border-color: #6b8fd9; }}
+    .nav-btn.active {{ background: #2b4a8c; color: #d8e1ff; border-color: #6b8fd9; }}
+    .navbar-wrapper {{ max-width: 1280px; margin: 0 auto; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; }}
+    .app-wrap {{ max-width: 1280px; margin: 0 auto; padding: 28px 20px 36px; }}
+    .hero {{ margin-bottom:22px; }}
+    .hero h1 {{ margin:0; font-size:1.8rem; font-weight:700; }}
+    .hero p {{ margin:6px 0 0; color:#9fb0de; }}
+    .form-section {{ background: #121a30; border:1px solid #2b3d69; border-radius:14px; padding:20px; margin-bottom:20px; }}
+    .form-section h5 {{ color: #d8e1ff; margin-bottom: 16px; font-weight: 700; border-bottom: 1px solid #27345b; padding-bottom: 12px; }}
+    .form-label {{ color: #b9c8ef; font-size: 0.95rem; }}
+    .form-control {{ background: #0b0f1f; border: 1px solid #27345b; color: #d8e1ff; }}
+    .form-control:focus {{ background: #131a30; border-color: #4b6bb0; color: #d8e1ff; box-shadow: 0 0 0 0.2rem rgba(75, 107, 176, 0.25); }}
+    .form-check-input {{ background: #0b0f1f; border: 1px solid #27345b; }}
+    .form-check-input:checked {{ background: #2b5a9c; border-color: #4b6bb0; }}
+    .form-check-label {{ color: #b9c8ef; margin: 0; }}
+    .form-text {{ color: #8ea2d9; }}
+    .btn-primary {{ background: #2b5a9c; border: 1px solid #4b6bb0; color: #d8e1ff; }}
+    .btn-primary:hover {{ background: #3a70b8; border-color: #6b8fd9; }}
+    .btn-outline-success {{ border: 1px solid #27a745; color: #5fcd7d; }}
+    .btn-outline-success:hover {{ background: #27a745; color: #d8e1ff; border-color: #27a745; }}
+    .alert-success {{ background: #1a3a1f; border: 1px solid #2d5a3d; color: #7dd47d; }}
+    .footer-link {{ position:fixed; right:16px; bottom:12px; color:#91a4dc; text-decoration:none; font-size:.85rem; opacity:.8; }}
+    .footer-link:hover {{ opacity:1; color:#c7d5ff; }}
+    @media (max-width: 700px) {{ .nav-buttons {{ flex-direction: column; width: 100%; margin-top: 12px; }} }}
 </style>
 <nav class="navbar-custom">
     <div class="navbar-wrapper">
