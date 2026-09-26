@@ -321,6 +321,10 @@ def _build_ip_agent_base(node: Dict[str, Any]) -> Optional[str]:
 
 async def fetch_node_clients(session: aiohttp.ClientSession, node: Dict[str, Any]) -> Dict[str, Any]:
     result = {"count": 0, "clients": [], "detected_path": None, "error": None}
+    if not IP_AGENT_ENABLED:
+        result["detected_path"] = "ip-agent-disabled"
+        return result
+
     base_ip_agent = _build_ip_agent_base(node)
     if IP_AGENT_ENABLED and base_ip_agent:
         res = await _try_node_path(session, base_ip_agent, "/connections", timeout_s=5)
