@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 
 import aiohttp
 from dotenv import load_dotenv
-from fastapi import FastAPI, Request, Form
+from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
 load_dotenv()
@@ -607,22 +607,33 @@ def _write_env_file(updates: Dict[str, str], path: str = ".env") -> bool:
 @APP.get("/settings", response_class=HTMLResponse)
 async def settings_get(request: Request):
     msg = request.query_params.get("msg", "")
-    # mask token for display
-    token_display = TELEGRAM_BOT_TOKEN
-    if token_display:
-        if len(token_display) > 6:
-            token_display = "****" + token_display[-6:]
-        else:
-            token_display = "****"
+    token_display = "задан" if TELEGRAM_BOT_TOKEN else "не задан"
+    marz_pass_display = "задан" if MARZBAN_ADMIN_PASS else "не задан"
 
     html = f"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8"><title>Настройки MarzBalancer</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
 </head><body class="bg-light"><div class="container py-4">
-<h1 class="mb-4">Настройки уведомлений</h1>
+<h1 class="mb-4">Настройки</h1>
 {f'<div class="alert alert-success">{msg}</div>' if msg else ''}
 <form method="post" action="/settings">
+  <h5 class="mb-3">Marzban</h5>
+  <div class="mb-3">
+    <label class="form-label">MARZBAN_URL</label>
+    <input name="MARZBAN_URL" class="form-control" value="{MARZBAN_URL or ''}" placeholder="https://marzban.example.com">
+  </div>
+  <div class="mb-3">
+    <label class="form-label">MARZBAN_ADMIN_USER</label>
+    <input name="MARZBAN_ADMIN_USER" class="form-control" value="{MARZBAN_ADMIN_USER or ''}" placeholder="admin">
+  </div>
+  <div class="mb-3">
+    <label class="form-label">MARZBAN_ADMIN_PASS</label>
+    <input name="MARZBAN_ADMIN_PASS" type="password" class="form-control" value="" placeholder="введите новый пароль или оставьте пустым">
+    <div class="form-text">Текущий: {marz_pass_display}</div>
+  </div>
+
+  <h5 class="mb-3 mt-4">Telegram уведомления</h5>
   <div class="mb-3">
     <label class="form-label">TELEGRAM_PROXY_URL</label>
     <input name="TELEGRAM_PROXY_URL" class="form-control" value="{TELEGRAM_PROXY_URL or ''}" placeholder="https://proxy.example">
@@ -630,12 +641,13 @@ async def settings_get(request: Request):
   <div class="mb-3">
     <label class="form-label">TELEGRAM_BOT_TOKEN</label>
     <input name="TELEGRAM_BOT_TOKEN" type="password" class="form-control" value="" placeholder="введите новый токен или оставьте пустым">
-    <div class="form-text">Текущий: {token_display or 'не задан'}</div>
+    <div class="form-text">Текущий: {token_display}</div>
   </div>
   <div class="mb-3">
     <label class="form-label">TELEGRAM_CHAT_ID</label>
     <input name="TELEGRAM_CHAT_ID" class="form-control" value="{TELEGRAM_CHAT_ID or ''}" placeholder="чат_ID">
   </div>
+
   <button class="btn btn-primary">Сохранить</button>
 </form>
 <form method="post" action="/settings/test" class="mt-3">
@@ -648,13 +660,26 @@ async def settings_get(request: Request):
 
 @APP.post("/settings")
 async def settings_post(request: Request):
+    global MARZBAN_URL, MARZBAN_ADMIN_USER, MARZBAN_ADMIN_PASS
     global TELEGRAM_PROXY_URL, TELEGRAM_API_BASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
     form = await request.form()
+
+    marzban_url = form.get("MARZBAN_URL", "").strip().rstrip("/")
+    marzban_user = form.get("MARZBAN_ADMIN_USER", "").strip()
+    marzban_pass = form.get("MARZBAN_ADMIN_PASS", "").strip()
+
     proxy = form.get("TELEGRAM_PROXY_URL", "").strip().rstrip("/")
     bot = form.get("TELEGRAM_BOT_TOKEN", "").strip()
     chat = form.get("TELEGRAM_CHAT_ID", "").strip()
 
     updates: Dict[str, str] = {}
+    if marzban_url != MARZBAN_URL:
+        updates["MARZBAN_URL"] = marzban_url
+    if marzban_user != MARZBAN_ADMIN_USER:
+        updates["MARZBAN_ADMIN_USER"] = marzban_user
+    if marzban_pass:
+        updates["MARZBAN_ADMIN_PASS"] = marzban_pass
+
     if proxy != TELEGRAM_PROXY_URL:
         updates["TELEGRAM_PROXY_URL"] = proxy
     if bot:
@@ -663,6 +688,19 @@ async def settings_post(request: Request):
         updates["TELEGRAM_CHAT_ID"] = chat
 
     # apply updates in-memory
+    if "MARZBAN_URL" in updates:
+        MARZBAN_URL = updates["MARZBAN_URL"]
+        _token_cache["token"] = None
+        _token_cache["fetched_at"] = 0
+    if "MARZBAN_ADMIN_USER" in updates:
+        MARZBAN_ADMIN_USER = updates["MARZBAN_ADMIN_USER"]
+        _token_cache["token"] = None
+        _token_cache["fetched_at"] = 0
+    if "MARZBAN_ADMIN_PASS" in updates:
+        MARZBAN_ADMIN_PASS = updates["MARZBAN_ADMIN_PASS"]
+        _token_cache["token"] = None
+        _token_cache["fetched_at"] = 0
+
     if "TELEGRAM_PROXY_URL" in updates:
         TELEGRAM_PROXY_URL = updates["TELEGRAM_PROXY_URL"]
         TELEGRAM_API_BASE = TELEGRAM_PROXY_URL or "https://api.telegram.org"
