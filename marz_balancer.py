@@ -982,7 +982,6 @@ async def settings_get(request: Request):
         <h2 class="navbar-title">MarzBalancer</h2>
         <div class="nav-buttons">
             <a href="/" class="nav-btn">Статус нод</a>
-            <a href="/reconnects" class="nav-btn">Переподключения</a>
             <a href="/settings" class="nav-btn active">Настройки</a>
         </div>
     </div>
