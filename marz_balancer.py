@@ -577,7 +577,7 @@ async def poll_loop():
                             node_label = entry.get("name") or entry.get("address") or f"node-{node_key}"
                             node_ip = entry.get("address", "—")
                             clients_count = entry.get("clients_count") or 0
-                            error_msg = entry.get("message", "").strip()
+                            error_msg = (entry.get("message", "") or "").strip()
                             reconnect_count = cache_entry.get("reconnect_count", 0)
 
                             # Вычисляем длительность предыдущего состояния
@@ -625,6 +625,9 @@ async def poll_loop():
                             reconnect_count = cache_entry.get("reconnect_count", 0)
                             if previous_state == "offline":
                                 reconnect_count += 1
+                            # Сбрасываем счетчик если узел перешел в online
+                            if current_state == "online":
+                                reconnect_count = 0
                             _node_status_cache[node_key] = {
                                 "status": current_state,
                                 "changed_at": now,
@@ -813,7 +816,7 @@ async def index(request: Request):
     items = ""
     for n in nodes:
         status_raw = str(n.get("status") or "—")
-        status_key = status_raw.lower()
+        status_key = (status_raw or "").lower()
         status_class = "badge bg-secondary"
         if status_key in ("connected", "online", "healthy"):
             status_class = "badge bg-success"
