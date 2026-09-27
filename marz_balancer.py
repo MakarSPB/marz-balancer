@@ -48,6 +48,9 @@ TELEGRAM_NOTIFY_ON_CONNECTING = _to_bool(os.getenv("TELEGRAM_NOTIFY_ON_CONNECTIN
 UI_LOGIN = os.getenv("UI_LOGIN", "").strip()
 UI_PASSWORD = os.getenv("UI_PASSWORD", "").strip()
 
+# Reconnect timeout (seconds) - how long to wait before attempting to reconnect an offline node
+RECONNECT_TIMEOUT_SECONDS = int(os.getenv("RECONNECT_TIMEOUT_SECONDS", "60"))
+
 SETTINGS_DB_PATH = os.getenv("SETTINGS_DB_PATH", "/data/settings.db").strip() or "/data/settings.db"
 MONITOR_PORT = int(os.getenv("MONITOR_PORT", "8443"))
 
@@ -117,6 +120,7 @@ def _apply_saved_settings() -> None:
     global IP_AGENT_ENABLED
     global TELEGRAM_PROXY_URL, TELEGRAM_API_BASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
     global TELEGRAM_NOTIFY_ON_ONLINE, TELEGRAM_NOTIFY_ON_OFFLINE, TELEGRAM_NOTIFY_ON_CONNECTING
+    global RECONNECT_TIMEOUT_SECONDS
 
     saved = _read_settings_db()
     if not saved:
@@ -145,6 +149,12 @@ def _apply_saved_settings() -> None:
         TELEGRAM_NOTIFY_ON_OFFLINE = _to_bool(saved.get("TELEGRAM_NOTIFY_ON_OFFLINE"), default=True)
     if "TELEGRAM_NOTIFY_ON_CONNECTING" in saved:
         TELEGRAM_NOTIFY_ON_CONNECTING = _to_bool(saved.get("TELEGRAM_NOTIFY_ON_CONNECTING"), default=False)
+
+    if "RECONNECT_TIMEOUT_SECONDS" in saved:
+        try:
+            RECONNECT_TIMEOUT_SECONDS = int(saved.get("RECONNECT_TIMEOUT_SECONDS", "60"))
+        except (ValueError, TypeError):
+            RECONNECT_TIMEOUT_SECONDS = 60
 
     TELEGRAM_API_BASE = TELEGRAM_PROXY_URL or "https://api.telegram.org"
     stats["telegram_api_base"] = TELEGRAM_API_BASE
@@ -618,14 +628,16 @@ async def poll_loop():
                             _node_status_cache[node_key] = {
                                 "status": current_state,
                                 "changed_at": now,
-                                "reconnect_count": reconnect_count
+                                "reconnect_count": reconnect_count,
+                                "last_reconnect_attempt": 0
                             }
                         elif not cache_entry:
                             # Первый раз видим эту ноду
                             _node_status_cache[node_key] = {
                                 "status": current_state,
                                 "changed_at": now,
-                                "reconnect_count": 0
+                                "reconnect_count": 0,
+                                "last_reconnect_attempt": 0
                             }
 
                 if status_change_messages:
@@ -636,7 +648,22 @@ async def poll_loop():
                     status_value = str(entry.get("status") or "").strip().lower()
                     if status_value in ("connected", "online"):
                         continue
+
+                    # Проверяем таймаут переподключения
+                    node_key = f"{entry.get('id')}"
+                    cache_entry = _node_status_cache.get(node_key)
+                    if cache_entry:
+                        last_attempt = cache_entry.get("last_reconnect_attempt", 0)
+                        time_since_last_attempt = now - last_attempt
+                        if time_since_last_attempt < RECONNECT_TIMEOUT_SECONDS:
+                            continue
+
                     reconnect_result = await _reconnect_node(session, token, entry.get("id"))
+
+                    # Обновляем время последней попытки переподключения
+                    if node_key in _node_status_cache:
+                        _node_status_cache[node_key]["last_reconnect_attempt"] = now
+
                     reconnect_attempts.append(
                         {
                             "node_id": entry.get("id"),
@@ -1020,6 +1047,15 @@ async def settings_get(request: Request):
             </div>
         </div>
 
+        <div class="form-section">
+            <h5>Настройки автопереподключения</h5>
+            <div class="mb-3">
+                <label class="form-label">Таймаут переподключения (секунды)</label>
+                <input name="RECONNECT_TIMEOUT_SECONDS" type="number" class="form-control" value="{RECONNECT_TIMEOUT_SECONDS}" min="10" max="3600" placeholder="60">
+                <div class="form-text">Marzban уже автоматически пытается переподключить offline ноды. Это значение - минимальный интервал между нашими попытками переподключения. Без спама!</div>
+            </div>
+        </div>
+
         <button type="submit" class="btn btn-primary">Сохранить</button>
     </form>
 
@@ -1039,6 +1075,7 @@ async def settings_post(request: Request):
     global IP_AGENT_ENABLED
     global TELEGRAM_PROXY_URL, TELEGRAM_API_BASE, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
     global TELEGRAM_NOTIFY_ON_ONLINE, TELEGRAM_NOTIFY_ON_OFFLINE, TELEGRAM_NOTIFY_ON_CONNECTING
+    global RECONNECT_TIMEOUT_SECONDS
     raw_body = (await request.body()).decode("utf-8", errors="ignore")
     form = parse_qs(raw_body, keep_blank_values=True)
 
@@ -1054,6 +1091,13 @@ async def settings_post(request: Request):
     notify_online = "TELEGRAM_NOTIFY_ON_ONLINE" in form
     notify_offline = "TELEGRAM_NOTIFY_ON_OFFLINE" in form
     notify_connecting = "TELEGRAM_NOTIFY_ON_CONNECTING" in form
+
+    reconnect_timeout_str = (form.get("RECONNECT_TIMEOUT_SECONDS", ["60"])[0] or "60").strip()
+    try:
+        reconnect_timeout = int(reconnect_timeout_str)
+        reconnect_timeout = max(10, min(3600, reconnect_timeout))  # Clamp between 10 and 3600
+    except (ValueError, TypeError):
+        reconnect_timeout = RECONNECT_TIMEOUT_SECONDS
 
     updates: Dict[str, str] = {}
     if marzban_url != MARZBAN_URL:
@@ -1079,6 +1123,9 @@ async def settings_post(request: Request):
         updates["TELEGRAM_NOTIFY_ON_OFFLINE"] = "1" if notify_offline else "0"
     if notify_connecting != TELEGRAM_NOTIFY_ON_CONNECTING:
         updates["TELEGRAM_NOTIFY_ON_CONNECTING"] = "1" if notify_connecting else "0"
+
+    if reconnect_timeout != RECONNECT_TIMEOUT_SECONDS:
+        updates["RECONNECT_TIMEOUT_SECONDS"] = str(reconnect_timeout)
 
     # apply updates in-memory
     if "MARZBAN_URL" in updates:
@@ -1112,6 +1159,9 @@ async def settings_post(request: Request):
         TELEGRAM_NOTIFY_ON_OFFLINE = _to_bool(updates["TELEGRAM_NOTIFY_ON_OFFLINE"], default=True)
     if "TELEGRAM_NOTIFY_ON_CONNECTING" in updates:
         TELEGRAM_NOTIFY_ON_CONNECTING = _to_bool(updates["TELEGRAM_NOTIFY_ON_CONNECTING"], default=False)
+
+    if "RECONNECT_TIMEOUT_SECONDS" in updates:
+        RECONNECT_TIMEOUT_SECONDS = reconnect_timeout
 
     # persist to sqlite
     if updates:
