@@ -71,7 +71,7 @@ stats: Dict[str, Any] = {
 }
 _token_cache: Dict[str, Any] = {"token": None, "fetched_at": 0, "ttl": 300}
 _last_master_error = ""
-_node_status_cache: Dict[str, str] = {}
+_node_status_cache: Dict[str, Dict[str, Any]] = {}
 
 
 def _init_settings_db() -> bool:
@@ -489,6 +489,22 @@ def _should_notify_status(current_state: str) -> bool:
         return TELEGRAM_NOTIFY_ON_CONNECTING
     return False
 
+def _format_duration(seconds: float) -> str:
+    """Форматирует длительность в человеческий вид"""
+    if seconds < 60:
+        return f"{int(seconds)}с"
+    elif seconds < 3600:
+        minutes = int(seconds // 60)
+        return f"{minutes}м"
+    elif seconds < 86400:
+        hours = int(seconds // 3600)
+        minutes = int((seconds % 3600) // 60)
+        return f"{hours}ч {minutes}м" if minutes else f"{hours}ч"
+    else:
+        days = int(seconds // 86400)
+        hours = int((seconds % 86400) // 3600)
+        return f"{days}д {hours}ч" if hours else f"{days}д"
+
 async def poll_loop():
     async with aiohttp.ClientSession() as session:
         while True:
@@ -536,22 +552,81 @@ async def poll_loop():
                     node_entries.append(entry)
 
                 status_change_messages: List[str] = []
+                now = time.time()
                 for entry in node_entries:
                     node_key = str(entry.get("id")) if entry.get("id") is not None else (entry.get("name") or entry.get("address") or "")
                     if not node_key:
                         continue
                     current_state = _normalize_node_state(entry.get("status"))
-                    previous_state = _node_status_cache.get(node_key)
+                    cache_entry = _node_status_cache.get(node_key)
+                    previous_state = cache_entry.get("status") if cache_entry else None
+
+                    # Проверяем смену статуса
                     if previous_state and current_state and previous_state != current_state:
                         if _should_notify_status(current_state):
                             node_label = entry.get("name") or entry.get("address") or f"node-{node_key}"
-                            status_change_messages.append(f"Нода {node_label}: {previous_state} -> {current_state}")
+                            node_ip = entry.get("address", "—")
+                            clients_count = entry.get("clients_count") or 0
+                            error_msg = entry.get("message", "").strip()
+                            reconnect_count = cache_entry.get("reconnect_count", 0)
+
+                            # Вычисляем длительность предыдущего состояния
+                            time_in_prev_state = now - cache_entry.get("changed_at", now)
+                            duration_str = _format_duration(time_in_prev_state)
+
+                            # Красивое сообщение с информацией о переходе
+                            if previous_state == "offline" and current_state == "online":
+                                msg_parts = [
+                                    f"✅ Нода {node_label}",
+                                    f"📍 {node_ip}",
+                                    f"⏱ Была offline {duration_str}",
+                                ]
+                                if reconnect_count > 0:
+                                    msg_parts.append(f"🔄 Попыток переподключения: {reconnect_count}")
+                                if clients_count > 0:
+                                    msg_parts.append(f"👥 Клиентов: {clients_count}")
+                                msg = "\n".join(msg_parts)
+                            elif previous_state == "online" and current_state == "offline":
+                                msg_parts = [
+                                    f"⚠️ Нода {node_label}",
+                                    f"📍 {node_ip}",
+                                    f"📊 перешла offline",
+                                ]
+                                if clients_count > 0:
+                                    msg_parts.append(f"👥 Было клиентов: {clients_count}")
+                                if error_msg:
+                                    msg_parts.append(f"📝 Ошибка: {error_msg[:100]}")
+                                msg = "\n".join(msg_parts)
+                            else:
+                                msg = f"⚠️ Нода {node_label}\n📍 {node_ip}\n📊 {previous_state} → {current_state}"
+
+                            status_change_messages.append(msg)
                     elif not previous_state and current_state == "online" and TELEGRAM_NOTIFY_ON_ONLINE:
                         # First time seeing this node and it's online
                         node_label = entry.get("name") or entry.get("address") or f"node-{node_key}"
-                        status_change_messages.append(f"Нода {node_label}: впервые обнаружена online")
+                        node_ip = entry.get("address", "—")
+                        msg = f"✅ Нода {node_label}\n📍 {node_ip}\n🆕 впервые обнаружена online"
+                        status_change_messages.append(msg)
+
+                    # Обновляем кэш
                     if current_state:
-                        _node_status_cache[node_key] = current_state
+                        if cache_entry and cache_entry.get("status") != current_state:
+                            # Статус изменился - увеличиваем счетчик и сбрасываем время
+                            reconnect_count = cache_entry.get("reconnect_count", 0)
+                            if previous_state == "offline":
+                                reconnect_count += 1
+                            _node_status_cache[node_key] = {
+                                "status": current_state,
+                                "changed_at": now,
+                                "reconnect_count": reconnect_count
+                            }
+                        elif not cache_entry:
+                            # Первый раз видим эту ноду
+                            _node_status_cache[node_key] = {
+                                "status": current_state,
+                                "changed_at": now,
+                                "reconnect_count": 0
+                            }
 
                 if status_change_messages:
                     for message in status_change_messages:
@@ -718,11 +793,21 @@ async def index(request: Request):
         elif status_key in ("error", "offline", "disconnected"):
             status_class = "badge bg-danger"
         clients_err = n.get("clients_error")
+
+        # Получаем информацию о переподключениях из кэша
+        node_key = str(n.get("id")) if n.get("id") is not None else (n.get("name") or n.get("address") or "")
+        cache_entry = _node_status_cache.get(node_key) or {}
+        reconnect_count = cache_entry.get("reconnect_count", 0)
+        reconnect_badge = f'<span class="badge bg-warning" style="margin-left: 6px;">🔄 {reconnect_count}</span>' if reconnect_count > 0 else ""
+
         items += f"""
         <article class="node-card">
             <div class="node-card-head">
                 <h3>{n.get('name') or n.get('address') or 'unknown-node'}</h3>
-                <span class="{status_class}">{status_raw}</span>
+                <div style="display: flex; gap: 6px;">
+                    <span class="{status_class}">{status_raw}</span>
+                    {reconnect_badge}
+                </div>
             </div>
             <div class="node-grid">
                 <div><span>Адрес</span><strong>{n.get('address') or '—'}</strong></div>
@@ -782,7 +867,6 @@ async def index(request: Request):
             <h2 class="navbar-title">MarzBalancer</h2>
             <div class="nav-buttons">
                 <a href="/" class="nav-btn active">Статус нод</a>
-                <a href="/reconnects" class="nav-btn">Переподключения</a>
                 <a href="/settings" class="nav-btn">Настройки</a>
             </div>
         </div>
@@ -809,100 +893,6 @@ async def index(request: Request):
 
         <section class="nodes-grid">
             {items}
-        </section>
-    </main>
-
-    <a href="https://github.com/MakarSPB/marz-balancer" target="_blank" rel="noopener noreferrer" class="footer-link">&copy; MakarSPB</a>
-
-    <script>
-        setTimeout(() => location.reload(), {int(POLL_INTERVAL * 1000)});
-    </script>
-</body>
-</html>"""
-    return HTMLResponse(content=html)
-
-
-@APP.get("/reconnects", response_class=HTMLResponse)
-async def reconnects_page(request: Request):
-    reconnect_attempts = stats.get("reconnect_attempts", [])
-
-    reconnect_items = ""
-    if reconnect_attempts:
-        for attempt in reconnect_attempts:
-            status_badge = "bg-success" if attempt.get("ok") else "bg-danger"
-            status_text = "✓ OK" if attempt.get("ok") else "✗ FAILED"
-            error_info = f'<div style="color: #ffa9c9; font-size: 0.9rem; margin-top: 8px;"><strong>Ошибка:</strong> {attempt.get("error")}</div>' if attempt.get("error") else ""
-
-            reconnect_items += f"""
-            <article class="node-card">
-                <div class="node-card-head">
-                    <h3>{attempt.get('node_name') or f"Нода #{attempt.get('node_id')}"}</h3>
-                    <span class="badge {status_badge}">{status_text}</span>
-                </div>
-                <div class="node-grid">
-                    <div><span>ID</span><strong>{attempt.get('node_id')}</strong></div>
-                    <div><span>Статус</span><strong>{attempt.get('status')}</strong></div>
-                </div>
-                {error_info}
-            </article>
-            """
-    else:
-        reconnect_items = "<div class='empty-state'>Попыток переподключения не найдено</div>"
-
-    html = f"""<!doctype html>
-<html lang="ru">
-<head>
-    <meta charset="utf-8">
-    <title>Переподключения - MarzBalancer</title>
-    <meta name="viewport" content="width=device-width, initial-scale=1">
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
-    <style>
-        body {{ background: #0b1020; color: #d8e1ff; margin: 0; }}
-        .navbar-custom {{ background: #080e1f; border-bottom: 1px solid #27345b; padding: 12px 0; position: sticky; top: 0; z-index: 100; }}
-        .navbar-title {{ font-weight: 700; font-size: 1.2rem; margin: 0; color: #d8e1ff; }}
-        .nav-buttons {{ display: flex; gap: 8px; align-items: center; }}
-        .nav-btn {{ padding: 6px 14px; border: 1px solid #4b6bb0; border-radius: 8px; text-decoration: none; color: #b9c8ef; font-size: 0.95rem; transition: all 0.2s; }}
-        .nav-btn:hover {{ background: #1a2847; color: #d8e1ff; border-color: #6b8fd9; }}
-        .nav-btn.active {{ background: #2b4a8c; color: #d8e1ff; border-color: #6b8fd9; }}
-        .navbar-wrapper {{ max-width: 1280px; margin: 0 auto; padding: 0 20px; display: flex; justify-content: space-between; align-items: center; }}
-        .app-wrap {{ max-width: 1280px; margin: 0 auto; padding: 28px 20px 36px; }}
-        .hero {{ display:flex; justify-content:space-between; gap:16px; align-items:flex-start; margin-bottom:22px; flex-wrap:wrap; }}
-        .hero h1 {{ margin:0; font-size:1.8rem; font-weight:700; }}
-        .hero p {{ margin:6px 0 0; color:#9fb0de; }}
-        .nodes-grid {{ display:grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap:14px; }}
-        .node-card {{ background:#121a30; border:1px solid #2b3d69; border-radius:14px; padding:14px; }}
-        .node-card-head {{ display:flex; justify-content:space-between; align-items:center; gap:10px; margin-bottom:10px; }}
-        .node-card-head h3 {{ margin:0; font-size:1.05rem; }}
-        .node-grid {{ display:grid; grid-template-columns: 1fr 1fr; gap:10px 12px; }}
-        .node-grid span {{ display:block; font-size:.8rem; color:#8ea2d9; margin-bottom:1px; }}
-        .node-grid strong {{ font-size:.95rem; color:#ecf2ff; }}
-        .empty-state {{ grid-column:1/-1; background:#1a233f; border:1px dashed #4b5f92; color:#b9c8ef; border-radius:12px; padding:20px; text-align:center; }}
-        .footer-link {{ position:fixed; right:16px; bottom:12px; color:#91a4dc; text-decoration:none; font-size:.85rem; opacity:.8; }}
-        .footer-link:hover {{ opacity:1; color:#c7d5ff; }}
-        @media (max-width: 700px) {{ .node-grid {{ grid-template-columns: 1fr; }} .nav-buttons {{ flex-direction: column; width: 100%; margin-top: 12px; }} }}
-    </style>
-</head>
-<body>
-    <nav class="navbar-custom">
-        <div class="navbar-wrapper">
-            <h2 class="navbar-title">MarzBalancer</h2>
-            <div class="nav-buttons">
-                <a href="/" class="nav-btn">Статус нод</a>
-                <a href="/reconnects" class="nav-btn active">Переподключения</a>
-                <a href="/settings" class="nav-btn">Настройки</a>
-            </div>
-        </div>
-    </nav>
-    <main class="app-wrap">
-        <section class="hero">
-            <div>
-                <h1>История переподключений</h1>
-                <p>Последние попытки автоматического переподключения офлайн нод</p>
-            </div>
-        </section>
-
-        <section class="nodes-grid">
-            {reconnect_items}
         </section>
     </main>
 
