@@ -115,6 +115,26 @@ def _save_settings_db(updates: Dict[str, str]) -> bool:
         return False
 
 
+def _is_node_notifications_enabled(node_key: str) -> bool:
+    """Check if notifications are enabled for a specific node (default: enabled)"""
+    try:
+        with sqlite3.connect(SETTINGS_DB_PATH) as conn:
+            row = conn.execute(
+                "SELECT value FROM app_settings WHERE key = ?",
+                (f"node_notifications_{node_key}",)
+            ).fetchone()
+        if row:
+            return _to_bool(row[0], default=True)
+        return True
+    except Exception:
+        return True
+
+
+def _set_node_notifications(node_key: str, enabled: bool) -> bool:
+    """Enable or disable notifications for a specific node"""
+    return _save_settings_db({f"node_notifications_{node_key}": "1" if enabled else "0"})
+
+
 def _apply_saved_settings() -> None:
     global MARZBAN_URL, MARZBAN_ADMIN_USER, MARZBAN_ADMIN_PASS
     global IP_AGENT_ENABLED
@@ -489,8 +509,13 @@ def _normalize_node_state(status_value: Any) -> Optional[str]:
         return "offline"
     return None
 
-def _should_notify_status(current_state: str) -> bool:
+def _should_notify_status(current_state: str, node_key: Optional[str] = None) -> bool:
     """Check if we should send notification for this status"""
+    # First check if node-specific notifications are disabled
+    if node_key and not _is_node_notifications_enabled(node_key):
+        return False
+
+    # Then check global notification settings
     if current_state == "online":
         return TELEGRAM_NOTIFY_ON_ONLINE
     elif current_state == "offline":
@@ -573,7 +598,7 @@ async def poll_loop():
 
                     # Проверяем смену статуса
                     if previous_state and current_state and previous_state != current_state:
-                        if _should_notify_status(current_state):
+                        if _should_notify_status(current_state, node_key):
                             node_label = entry.get("name") or entry.get("address") or f"node-{node_key}"
                             node_ip = entry.get("address", "—")
                             clients_count = entry.get("clients_count") or 0
@@ -611,7 +636,7 @@ async def poll_loop():
                                 msg = f"⚠️ Нода {node_label}\n📍 {node_ip}\n📊 {previous_state} → {current_state}"
 
                             status_change_messages.append(msg)
-                    elif not previous_state and current_state == "online" and TELEGRAM_NOTIFY_ON_ONLINE:
+                    elif not previous_state and current_state == "online" and _should_notify_status("online", node_key):
                         # First time seeing this node and it's online
                         node_label = entry.get("name") or entry.get("address") or f"node-{node_key}"
                         node_ip = entry.get("address", "—")
@@ -830,13 +855,20 @@ async def index(request: Request):
         reconnect_count = cache_entry.get("reconnect_count", 0)
         reconnect_badge = f'<span class="badge bg-warning" style="margin-left: 6px;">🔄 {reconnect_count}</span>' if reconnect_count > 0 else ""
 
+        # Получаем статус уведомлений для ноды
+        notifications_enabled = _is_node_notifications_enabled(node_key)
+
         items += f"""
         <article class="node-card">
             <div class="node-card-head">
                 <h3>{n.get('name') or n.get('address') or 'unknown-node'}</h3>
-                <div style="display: flex; gap: 6px;">
+                <div style="display: flex; gap: 6px; align-items: center;">
                     <span class="{status_class}">{status_raw}</span>
                     {reconnect_badge}
+                    <label style="display: flex; align-items: center; gap: 6px; margin-left: 10px; cursor: pointer; font-size: 0.9rem;">
+                        <input type="checkbox" class="node-notif-checkbox" data-node-key="{node_key}" {('checked' if notifications_enabled else '')} style="cursor: pointer;">
+                        <span title="Уведомления в Telegram">🔔</span>
+                    </label>
                 </div>
             </div>
             <div class="node-grid">
@@ -886,6 +918,7 @@ async def index(request: Request):
         .node-grid strong {{ font-size:.95rem; color:#ecf2ff; }}
         .node-error {{ margin-top:12px; color:#ffd4df; background:#4a1d2a; border:1px solid #a83f58; border-radius:10px; padding:8px 10px; font-size:.9rem; }}
         .empty-state {{ grid-column:1/-1; background:#1a233f; border:1px dashed #4b5f92; color:#b9c8ef; border-radius:12px; padding:20px; text-align:center; }}
+        .node-notif-checkbox {{ width: 18px; height: 18px; accent-color: #6b8fd9; }}
         .footer-link {{ position:fixed; right:16px; bottom:12px; color:#91a4dc; text-decoration:none; font-size:.85rem; opacity:.8; }}
         .footer-link:hover {{ opacity:1; color:#c7d5ff; }}
         @media (max-width: 700px) {{ .node-grid {{ grid-template-columns: 1fr; }} .nav-buttons {{ flex-direction: column; width: 100%; margin-top: 12px; }} }}
@@ -929,6 +962,30 @@ async def index(request: Request):
     <a href="https://github.com/MakarSPB/marz-balancer" target="_blank" rel="noopener noreferrer" class="footer-link">&copy; MakarSPB</a>
 
     <script>
+        // Handle node notifications checkbox
+        document.querySelectorAll('.node-notif-checkbox').forEach(checkbox => {{
+            checkbox.addEventListener('change', async function() {{
+                const nodeKey = this.dataset.nodeKey;
+                const enabled = this.checked;
+
+                try {{
+                    const response = await fetch(`/api/node/${{encodeURIComponent(nodeKey)}}/notifications`, {{
+                        method: 'PUT',
+                        headers: {{'Content-Type': 'application/json'}},
+                        body: JSON.stringify({{enabled}})
+                    }});
+
+                    if (!response.ok) {{
+                        console.error('Failed to update notification setting');
+                        this.checked = !enabled; // Revert on error
+                    }}
+                }} catch (error) {{
+                    console.error('Error updating notification setting:', error);
+                    this.checked = !enabled; // Revert on error
+                }}
+            }});
+        }});
+
         setTimeout(() => location.reload(), {int(POLL_INTERVAL * 1000)});
     </script>
 </body>
@@ -1185,6 +1242,20 @@ async def settings_test_notification():
         )
     msg = "Тестовое уведомление отправлено" if sent else "Не удалось отправить тестовое уведомление"
     return RedirectResponse(url=f"/settings?msg={msg}", status_code=303)
+
+
+@APP.put("/api/node/{node_key}/notifications")
+async def toggle_node_notifications(node_key: str, request: Request):
+    """Toggle notifications for a specific node"""
+    try:
+        data = await request.json()
+        enabled = data.get("enabled", True)
+        _set_node_notifications(node_key, enabled)
+        return JSONResponse({"status": "ok", "enabled": enabled})
+    except Exception as e:
+        return JSONResponse({"status": "error", "message": str(e)}, status_code=400)
+
+
 if __name__ == "__main__":
     import uvicorn
 
